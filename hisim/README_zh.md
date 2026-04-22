@@ -18,7 +18,7 @@ Hisim 仿真工具 通过提供与sglang服务一致的命令行接口, 启动�
 
 ```bash
 cd hisim
-pip install .
+pip install . -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 ```
 
 ---
@@ -54,8 +54,25 @@ pip install .
 请在项目根目录（即包含本 `README.md` 的目录）中运行以下命令
 ``` bash
 python3 -m hisim.simulation.sglang.launch_server \
-  --model-path "Qwen/Qwen3-32B-FP8" \
-  --sim-config-path test/assets/mock/config.json
+  --model-path "/opt/model/Qwen3-32B-FP8/Qwen/Qwen3-32B-FP8" \
+  --sim-config-path test/assets/mock/config.qwen32b.aic.json
+
+python3 -m hisim.simulation.sglang.launch_server \
+  --model-path "/opt/model/DeepSeek-R1" \
+  --sim-config-path test/assets/mock/config.json 
+
+python3 -m hisim.simulation.sglang.launch_server \
+  --model-path "/opt/model/DeepSeek-V3.2" \
+  --sim-config-path test/assets/mock/config.json 
+
+python3 -m hisim.simulation.sglang.launch_server \
+  --model-path "/opt/model/DeepSeek-V3.2" \
+  --sim-config-path test/assets/mock/config_h20.json 
+
+python3 -m hisim.simulation.sglang.launch_server \
+  --model-path "/opt/model/DeepSeek-R1" \
+  --sim-config-path test/assets/mock/config_h20.json 
+
 ```
 
 > **Notes**:
@@ -77,23 +94,49 @@ python3 -m hisim.simulation.sglang.launch_server \
 python3 -m hisim.simulation.bench_serving \
     --warmup-request 0 \
     --bench-mode simulation \
-    --model "Qwen/Qwen3-32B-FP8" \
+    --model "/opt/model/Qwen3-32B-FP8/Qwen/Qwen3-32B-FP8" \
     --backend sglang \
     --dataset-name hisim-collection \
-    --dataset-path user_replay_requests.jsonl
+    --dataset-path /data/tair-kvcache/tair-kvcache/hisim/test/assets/dataset/hisim_collection_requests.jsonl
 ```
 - **基于随机构造的特征数据集压测**:
 ``` bash
 python3 -m hisim.simulation.bench_serving \
     --warmup-requests 0 \
-    --model "Qwen/Qwen3-32B-FP8" \
+    --model "/opt/model/Qwen3-32B-FP8/Qwen/Qwen3-32B-FP8" \
     --bench-mode simulation \
     --dataset-name random \
     --request-rate 4 \
     --random-input-len 1024 \
     --random-output-len 1024 \
     --random-range-ratio 1 \
-    --num-prompts 50
+    --num-prompts 50 \
+    --dataset-path /data/boole-deploy/ShareGPT_V3_unfiltered_cleaned_split.json \
+    --host "127.0.0.1"
+
+python3 -m hisim.simulation.bench_serving \
+    --warmup-requests 0 \
+    --model "/opt/model/DeepSeek-R1" \
+    --bench-mode simulation \
+    --dataset-name random \
+    --request-rate 4 \
+    --random-input-len 16384 \
+    --random-output-len 1786 \
+    --random-range-ratio 1 \
+    --num-prompts 50 \
+    --dataset-path /data/boole-deploy/ShareGPT_V3_unfiltered_cleaned_split.json
+
+python3 -m hisim.simulation.bench_serving \
+    --warmup-requests 0 \
+    --model "/opt/model/DeepSeek-V3.2" \
+    --bench-mode simulation \
+    --dataset-name random \
+    --request-rate 4 \
+    --random-input-len 16384 \
+    --random-output-len 1786 \
+    --random-range-ratio 1 \
+    --num-prompts 50 \
+    --dataset-path /data/boole-deploy/ShareGPT_V3_unfiltered_cleaned_split.json
 ```
 
 至此,已经完成了基于框架劫持的推理仿真。

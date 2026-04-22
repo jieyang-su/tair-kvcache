@@ -99,7 +99,9 @@ class C_ModelRunnerHook(BaseHook):
                 self.dtype
             )  # FIXME: get kv cache dtype from server args
 
-            model = ConfigManager.get_model_info(self.model_config.hf_config.__dict__)
+            model = ConfigManager.get_model_info(
+                self.model_config.hf_config.__dict__, self.server_args.model_path
+            )
             hw = ConfigManager.get_accelerator_info()
             config = ConfigManager.get_scheduler_config(
                 self.server_args.__dict__,
@@ -383,7 +385,7 @@ class C_HiCacheController(BaseHook):
                     )
                     if completed_tokens < storage_hit_count:
                         # Continue to prefetch data next time.
-                        operation.completed_tokens = int(completed_tokens)
+                        operation.completed_tokens = completed_tokens
                         setattr(
                             self,
                             "chunked_prefetch_operation",
@@ -614,7 +616,7 @@ class C_SchedulerHook(BaseHook):
 
             try:
                 model = ConfigManager.get_model_info(
-                    self.model_config.hf_config.__dict__
+                    self.model_config.hf_config.__dict__, self.server_args.model_path
                 )
                 hw = ConfigManager.get_accelerator_info()
                 sched_config = ConfigManager.get_scheduler_config(

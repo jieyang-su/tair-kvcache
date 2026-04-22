@@ -16,11 +16,10 @@ from aiconfigurator.sdk.common import (
     KVCacheQuantMode,
     MoEQuantMode,
     DatabaseMode,
-    SupportedModels,
 )
 from aiconfigurator.sdk.config import RuntimeConfig, ModelConfig
 from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.perf_database import get_database, get_system_config_path
+from aiconfigurator.sdk.perf_database import get_database, get_systems_paths
 
 from hisim.simulation.types import (
     SchedulerConfig,
@@ -265,12 +264,15 @@ def _parse_decode_bs_range_from_xgb_model_path(
 
 
 def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.BaseModel:
+    aic_model_path = model.model_path or model.name
     model_config = ModelConfig(
         pp_size=sched_config.pp_size,
         tp_size=sched_config.tp_size,
         moe_tp_size=sched_config.tp_size,  # FIXME
         moe_ep_size=sched_config.ep_size,
         attention_dp_size=sched_config.dp_size,  # FIXME
+        enable_wideep=sched_config.enable_wideep,
+        moe_backend=sched_config.moe_backend,
         gemm_quant_mode=MAP_DTYPE_TO_GEMMQuantMode.get(
             sched_config.data_type, GEMMQuantMode.float16
         ),
@@ -289,74 +291,39 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
         workload_distribution="power_law_1.2",
     )
 
-    if model.model_type in ["qwen", "qwen2", "qwen3", "llama", "chatglm"]:
-        # aiconfigurator.sdk.backends.trtllm_backend._get_memory_usage() requires the SupportedModels.
-        SupportedModels.update(
-            {
-                model.name: [
-                    "LLAMA",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    0,
-                    0,
-                    0,
-                    None,
-                ]
-            }
-        )
-    elif model.model_type in ["deepseek_v3", "kimi_k2"]:
-        SupportedModels.update(
-            {
-                model.name: [
-                    "DEEPSEEK",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    model.num_experts_per_tok,
-                    model.n_routed_experts,
-                    model.moe_intermediate_size,
-                    None,
-                ]
-            }
-        )
-    elif model.model_type in ["qwen3_moe"]:
-        SupportedModels.update(
-            {
-                model.name: [
-                    "MOE",
-                    model.num_hidden_layers,
-                    model.num_attention_heads,
-                    model.num_key_value_heads,
-                    model.head_dim,
-                    model.hidden_size,
-                    model.intermediate_size,
-                    model.vocab_size,
-                    model.max_seq_len,
-                    model.num_experts_per_tok,
-                    model.n_routed_experts,
-                    model.moe_intermediate_size,
-                    None,
-                ]
-            }
-        )
-    else:
+    logger.info(
+        "Resolved AIC model config: backend=%s model=%s aic_model_path=%s tp=%s ep=%s dp=%s pp=%s moe_tp=%s moe_ep=%s enable_wideep=%s moe_backend=%s",
+        sched_config.backend_name,
+        model.name,
+        aic_model_path,
+        sched_config.tp_size,
+        sched_config.ep_size,
+        sched_config.dp_size,
+        sched_config.pp_size,
+        model_config.moe_tp_size,
+        model_config.moe_ep_size,
+        model_config.enable_wideep,
+        model_config.moe_backend,
+    )
+
+    if model.model_type not in [
+        "qwen",
+        "qwen2",
+        "qwen3",
+        "llama",
+        "chatglm",
+        "deepseek_v3",
+        "kimi_k2",
+        "qwen3_moe",
+    ]:
         raise ValueError(f"Unsupported model type: {model.model_type}")
-    return models.get_model(
-        model_name=model.name,
+    perf_model = models.get_model(
+        model_path=aic_model_path,
         model_config=model_config,
         backend_name=sched_config.backend_name,
     )
+    logger.info("Resolved AIC perf model class: %s", perf_model.__class__.__name__)
+    return perf_model
 
 
 class AIConfiguratorTimePredictor(InferTimePredictor):
@@ -383,9 +350,9 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
             system=hw.name,
             backend=config.backend_name,
             version=config.backend_version,
-            systems_dir=database_path
+            systems_paths=database_path
             if database_path is not None
-            else get_system_config_path(),
+            else get_systems_paths(),
         )
 
         if database is None:

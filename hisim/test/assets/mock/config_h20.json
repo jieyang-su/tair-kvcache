@@ -1,0 +1,28 @@
+{
+    "platform": {
+        "accelerator": {
+            "name": "H20"
+        },
+        "disk_read_bandwidth_gb": 8,
+        "disk_write_bandwidth_gb": 8,
+        "memory_read_bandwidth_gb": 16,
+        "memory_write_bandwidth_gb": 16,
+        "num_device_per_node": 8
+    },
+    "predictor": {
+        "name": "aiconfigurator",
+        "database_path": "./test/assets/mock/aic",
+        "database_mode": "HYBRID",
+        "device_name": "h20_sxm1"
+    },
+    "scheduler": {
+        "tp_size": 8,
+        "ep_size": 8,
+        "dp_size": 8,
+        "enable_wideep": true,
+        "moe_backend": "deepep_moe",
+        "data_type": "FP8",
+        "kv_cache_data_type": "FP16",
+        "backend_version": "0.5.8.post1"
+    }
+}

@@ -1,7 +1,7 @@
 {
     "platform": {
         "accelerator": {
-            "name": "H20"
+            "name": "H100"
         },
         "disk_read_bandwidth_gb": 8,
         "disk_write_bandwidth_gb": 8,
@@ -11,12 +11,18 @@
     },
     "predictor": {
         "name": "aiconfigurator",
+        "database_path": "./test/assets/mock/aic",
+        "database_mode": "HYBRID",
         "device_name": "h100_sxm"
     },
     "scheduler": {
-        "tp_size": 1,
-        "ep_size": 1,
-        "dp_size": 1,
+        "tp_size": 8,
+        "ep_size": 8,
+        "dp_size": 8,
+        "enable_wideep": true,
+        "moe_backend": "deepep_moe",
+        "data_type": "FP8",
+        "kv_cache_data_type": "FP16",
         "backend_version": "0.5.6.post2"
     }
 }

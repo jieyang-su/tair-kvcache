@@ -11,7 +11,7 @@
     },
     "predictor": {
         "name": "aiconfigurator",
-        "database_path": "download_path/Hisim/Data/aic",
+        "database_path": "./test/assets/mock/aic",
         "device_name": "h20_sxm",
         "prefill_scale_factor": 1.045,
         "decode_scale_factor": 1.011

@@ -10,5 +10,5 @@ dependencies = [
     "numpy",
     "scikit-learn",
     "xgboost",
-    "aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@h20e-higher-acc"
+    "aiconfigurator @ file:///data/tair-kvcache/aiconfigurator"
 ]

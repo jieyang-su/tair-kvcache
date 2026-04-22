@@ -1,4 +1,5 @@
 import json
+import os
 
 from hisim.spec import ModelInfo, AcceleratorInfo, DataType
 from hisim.simulation.types import PlatformConfig, SchedulerConfig
@@ -27,7 +28,9 @@ class ConfigManager:
         cls._model_info = model
 
     @classmethod
-    def get_model_info(cls, hf_config: dict | None) -> ModelInfo:
+    def get_model_info(
+        cls, hf_config: dict | None, source_model_path: str | None = None
+    ) -> ModelInfo:
         if hf_config is not None:
             model = ModelInfo.from_config(hf_config)
             if model is None:
@@ -38,6 +41,24 @@ class ConfigManager:
             with open(Envs.config_path()) as f:
                 config: dict = json.load(f)
             model = ModelInfo.find_by_model_name(config.get("model", {}).get("name"))
+
+        if model is not None and source_model_path:
+            original_model_path = source_model_path
+            hf_model_path = model.model_path or None
+            if hf_model_path != original_model_path:
+                logger.info(
+                    "Override model_path for simulation: hf_config_path=%s source_model_path=%s",
+                    hf_model_path,
+                    original_model_path,
+                )
+
+            model.model_path = original_model_path
+
+            if os.path.isabs(original_model_path) and not os.path.exists(original_model_path):
+                logger.warning(
+                    "Source model_path does not exist on the current worker: %s",
+                    original_model_path,
+                )
 
         return model
 
@@ -113,7 +134,9 @@ class ConfigManager:
     def get_scheduler_config(
         cls, server_args: dict, backend: str, hf_config: dict | None = None
     ):
-        model = ConfigManager.get_model_info(hf_config)
+        model = ConfigManager.get_model_info(
+            hf_config, server_args.get("model_path")
+        )
 
         internal_config = cls._parse_server_args(server_args, backend)
 
@@ -130,6 +153,8 @@ class ConfigManager:
         dp_size = scheduler_config.get("dp_size")
         if dp_size is None:
             dp_size = internal_config.dp_size
+        enable_wideep = bool(scheduler_config.get("enable_wideep", False))
+        moe_backend = scheduler_config.get("moe_backend")
         dtype = scheduler_config.get("data_type")
         if dtype is not None:
             dtype = DataType(dtype.upper())
@@ -150,6 +175,8 @@ class ConfigManager:
             tp_size=tp_size,
             ep_size=ep_size,
             dp_size=dp_size,
+            enable_wideep=enable_wideep,
+            moe_backend=moe_backend,
             # TODO: initialize with the runtime data type.
             data_type=dtype,
             kv_cache_data_type=kv_cache_dtype,
@@ -167,6 +194,8 @@ class ConfigManager:
                 tp_size=server_args.get("tp_size", 1),
                 ep_size=server_args.get("ep_size", 1),
                 dp_size=server_args.get("dp_size", 1),
+                enable_wideep=False,
+                moe_backend=None,
                 max_prefill_tokens=server_args.get("max_prefill_tokens"),
                 chunked_prefill_size=server_args.get("chunked_prefill_size"),
                 mem_fraction_static=server_args.get("mem_fraction_static"),
