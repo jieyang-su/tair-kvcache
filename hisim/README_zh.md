@@ -69,9 +69,6 @@ python3 -m hisim.simulation.sglang.launch_server \
   --model-path "/opt/model/DeepSeek-V3.2" \
   --sim-config-path test/assets/mock/config_h20.json 
 
-python3 -m hisim.simulation.sglang.launch_server \
-  --model-path "/opt/model/DeepSeek-R1" \
-  --sim-config-path test/assets/mock/config_h20.json 
 
 ```
 
@@ -111,8 +108,7 @@ python3 -m hisim.simulation.bench_serving \
     --random-output-len 1024 \
     --random-range-ratio 1 \
     --num-prompts 50 \
-    --dataset-path /data/boole-deploy/ShareGPT_V3_unfiltered_cleaned_split.json \
-    --host "127.0.0.1"
+    --dataset-path /data/boole-deploy/ShareGPT_V3_unfiltered_cleaned_split.json
 
 python3 -m hisim.simulation.bench_serving \
     --warmup-requests 0 \
