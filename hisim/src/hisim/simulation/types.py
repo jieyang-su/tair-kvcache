@@ -39,6 +39,10 @@ class SchedulerConfig:
     dp_size: int = 1
     pp_size: int = 1
     num_hidden_layers: int = 0
+    moe_tp_size: Optional[int] = None
+    workload_distribution: str = "recorded"
+    attention_backend: str = "flashinfer"
+    enable_eplb: bool = False
     enable_wideep: bool = False
     moe_backend: Optional[str] = None
     max_running_requests: int = (1 << 31) - 1

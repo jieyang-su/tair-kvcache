@@ -153,7 +153,9 @@ class ConfigManager:
         dp_size = scheduler_config.get("dp_size")
         if dp_size is None:
             dp_size = internal_config.dp_size
+        moe_tp_size = scheduler_config.get("moe_tp_size")
         enable_wideep = bool(scheduler_config.get("enable_wideep", False))
+        enable_eplb = bool(scheduler_config.get("enable_eplb", False))
         moe_backend = scheduler_config.get("moe_backend")
         def parse_dtype(name: str, default=None):
             dtype = scheduler_config.get(name)
@@ -180,6 +182,10 @@ class ConfigManager:
             ep_size=ep_size,
             dp_size=dp_size,
             num_hidden_layers=scheduler_config.get("num_hidden_layers", 0),
+            moe_tp_size=moe_tp_size,
+            workload_distribution=scheduler_config.get("workload_distribution", "recorded"),
+            attention_backend=scheduler_config.get("attention_backend", "flashinfer"),
+            enable_eplb=enable_eplb,
             enable_wideep=enable_wideep,
             moe_backend=moe_backend,
             # TODO: initialize with the runtime data type.
@@ -204,6 +210,7 @@ class ConfigManager:
                 ep_size=server_args.get("ep_size", 1),
                 dp_size=server_args.get("dp_size", 1),
                 num_hidden_layers=server_args.get("num_hidden_layers", 0),
+                moe_tp_size=server_args.get("moe_tp_size"),
                 enable_wideep=False,
                 moe_backend=None,
                 max_prefill_tokens=server_args.get("max_prefill_tokens"),

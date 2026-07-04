@@ -278,15 +278,22 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
     kv_cache_data_type = sched_config.kv_cache_data_type or sched_config.data_type
     fmha_data_type = sched_config.fmha_data_type or kv_cache_data_type
     comm_data_type = sched_config.comm_data_type or sched_config.data_type
+    moe_tp_size = (
+        sched_config.moe_tp_size
+        if sched_config.moe_tp_size is not None
+        else sched_config.tp_size
+    )
     model_config = ModelConfig(
         pp_size=sched_config.pp_size,
         tp_size=sched_config.tp_size,
-        moe_tp_size=sched_config.tp_size,  # FIXME
+        moe_tp_size=moe_tp_size,
         moe_ep_size=sched_config.ep_size,
         attention_dp_size=sched_config.dp_size,  # FIXME
         overwrite_num_layers=sched_config.num_hidden_layers,
         enable_wideep=sched_config.enable_wideep,
+        enable_eplb=sched_config.enable_eplb,
         moe_backend=sched_config.moe_backend,
+        attention_backend=sched_config.attention_backend,
         gemm_quant_mode=MAP_DTYPE_TO_GEMMQuantMode.get(
             gemm_data_type, _quant_mode(GEMMQuantMode, "float16", "bfloat16")
         ),
@@ -302,11 +309,11 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
         comm_quant_mode=MAP_DTYPE_TO_CommQunatMode.get(
             comm_data_type, CommQuantMode.half
         ),
-        workload_distribution="power_law_1.2",
+        workload_distribution=sched_config.workload_distribution,
     )
 
     logger.info(
-        "Resolved AIC model config: backend=%s model=%s aic_model_path=%s tp=%s ep=%s dp=%s pp=%s moe_tp=%s moe_ep=%s enable_wideep=%s moe_backend=%s gemm_dtype=%s moe_dtype=%s kv_dtype=%s fmha_dtype=%s comm_dtype=%s",
+        "Resolved AIC model config: backend=%s model=%s aic_model_path=%s tp=%s ep=%s dp=%s pp=%s moe_tp=%s moe_ep=%s enable_wideep=%s enable_eplb=%s moe_backend=%s workload_distribution=%s attention_backend=%s gemm_dtype=%s moe_dtype=%s kv_dtype=%s fmha_dtype=%s comm_dtype=%s",
         sched_config.backend_name,
         model.name,
         aic_model_path,
@@ -317,7 +324,10 @@ def get_perf_model(sched_config: SchedulerConfig, model: ModelInfo) -> models.Ba
         model_config.moe_tp_size,
         model_config.moe_ep_size,
         model_config.enable_wideep,
+        model_config.enable_eplb,
         model_config.moe_backend,
+        model_config.workload_distribution,
+        model_config.attention_backend,
         gemm_data_type,
         moe_data_type,
         kv_cache_data_type,
@@ -379,8 +389,9 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
 
         database.set_default_database_mode(database_mode)
 
-        # --- Replace the original function to support more flexible request input. --- #
-
+        # Older AIConfigurator releases exposed this helper on PerfDatabase,
+        # while newer releases route interpolation inside sdk.interpolation and
+        # each operator decides whether extrapolation is allowed.
         if hasattr(database, "_nearest_1d_point_helper"):
             db_nearest_1d_point_helper = database._nearest_1d_point_helper
 
@@ -391,8 +402,6 @@ class AIConfiguratorTimePredictor(InferTimePredictor):
                 return db_nearest_1d_point_helper(x, values, inner_only)
 
             database._nearest_1d_point_helper = wrapped_nearest_1d_point_helper
-
-        # --- End --- #
 
         self._session = InferenceSession(
             model=get_perf_model(config, model),

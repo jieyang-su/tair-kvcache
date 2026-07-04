@@ -35,6 +35,12 @@ class SchedulerConfig:
     ep_size: int = 1
     dp_size: int = 1
     num_hidden_layers: int = 0
+    moe_tp_size: Optional[int] = None
+    workload_distribution: str = "recorded"
+    attention_backend: str = "flashinfer"
+    enable_eplb: bool = False
+    enable_wideep: bool = False
+    moe_backend: Optional[str] = None
     data_type: str = "FP16"
     gemm_data_type: Optional[str] = None
     moe_data_type: Optional[str] = None
@@ -137,6 +143,42 @@ class SimulationArgs:
             default=None,
         )
         parser.add_argument(
+            f"--{prefix}moe-tp-size",
+            dest="sim_moe_tp_size",
+            type=int,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}workload-distribution",
+            dest="sim_workload_distribution",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}attention-backend",
+            dest="sim_attention_backend",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}enable-eplb",
+            dest="sim_enable_eplb",
+            action="store_true",
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}enable-wideep",
+            dest="sim_enable_wideep",
+            action="store_true",
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}moe-backend",
+            dest="sim_moe_backend",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
             f"--{prefix}data-type", dest="sim_data_type", type=str, default=None
         )
         parser.add_argument(
@@ -212,6 +254,12 @@ class SimulationArgs:
                 ep_size=scheduler.get("ep_size", 1),
                 dp_size=scheduler.get("dp_size", 1),
                 num_hidden_layers=scheduler.get("num_hidden_layers", 0),
+                moe_tp_size=scheduler.get("moe_tp_size"),
+                workload_distribution=scheduler.get("workload_distribution", "recorded"),
+                attention_backend=scheduler.get("attention_backend", "flashinfer"),
+                enable_eplb=scheduler.get("enable_eplb", False),
+                enable_wideep=scheduler.get("enable_wideep", False),
+                moe_backend=scheduler.get("moe_backend"),
                 data_type=scheduler.get("data_type", "FP16"),
                 gemm_data_type=scheduler.get("gemm_data_type"),
                 moe_data_type=scheduler.get("moe_data_type"),
@@ -268,6 +316,12 @@ class SimulationArgs:
             ("sim_ep_size", "ep_size"),
             ("sim_dp_size", "dp_size"),
             ("sim_num_hidden_layers", "num_hidden_layers"),
+            ("sim_moe_tp_size", "moe_tp_size"),
+            ("sim_workload_distribution", "workload_distribution"),
+            ("sim_attention_backend", "attention_backend"),
+            ("sim_enable_eplb", "enable_eplb"),
+            ("sim_enable_wideep", "enable_wideep"),
+            ("sim_moe_backend", "moe_backend"),
             ("sim_data_type", "data_type"),
             ("sim_gemm_data_type", "gemm_data_type"),
             ("sim_moe_data_type", "moe_data_type"),
