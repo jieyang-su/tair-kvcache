@@ -47,7 +47,7 @@ def split_storage_quotas_value(value: str):
 class InstanceGroupQuota(JsonData):
     def __init__(self,
                  capacity: int,
-                 storage_qoutas: list[StorageQuota]):
+                 storage_qoutas):
         self._capacity = capacity
         self._storage_qoutas = storage_qoutas
         self.check()
@@ -145,7 +145,7 @@ class ReclaimStrategy(JsonData):
 
 class MetaStorageBackendConfig(JsonData):
     def __init__(self,
-                 storage_type: str = "local", # local|redis
+                 storage_type: str = "local", # local|redis|cached
                  storage_uri: str = ""): # if set empty, no persistence
         self._storage_type = storage_type
         self._storage_uri = storage_uri
@@ -159,8 +159,8 @@ class MetaStorageBackendConfig(JsonData):
     
     def check(self) -> bool:
         _storage_type = self._storage_type.lower()
-        if not _storage_type in ["local", "redis"]:
-            raise RuntimeError(f"MetaStorageBackendConfig type {_storage_type} invalid, support local|redis")
+        if not _storage_type in ["local", "redis", "cached"]:
+            raise RuntimeError(f"MetaStorageBackendConfig type {_storage_type} invalid, support local|redis|cached")
         self._storage_type = _storage_type
     
     @classmethod
@@ -296,13 +296,15 @@ class CacheConfig(JsonData):
 class InstanceGroup(JsonData):
     def __init__(self,
                  name: str,
-                 storage_candidates: list[str],
+                 storage_candidates,
                  instance_group_quota: InstanceGroupQuota,
                  quota_group_name: str,
                  max_instance_count: int = 100,
                  cache_config: CacheConfig = CacheConfig(),
                  user_data: str = "",
-                 version: int = 1
+                 version: int = 1,
+                 extra_info: str = "",
+                 event_reporting_storage_candidates=None,
                  ):
         self._name = name
         self._storage_candidates = storage_candidates
@@ -312,16 +314,24 @@ class InstanceGroup(JsonData):
         self._cache_config = cache_config
         self._user_data = user_data
         self._version = version
+        self._extra_info = extra_info
+        self._event_reporting_storage_candidates = event_reporting_storage_candidates or []
         self.check()
 
     def check(self):
         if not is_list_of_str(self._storage_candidates):
             raise RuntimeError(f"storage_candidates expect List[Str], real '{type(self._storage_candidates)}'")
+        if self._extra_info:
+            import json
+            try:
+                json.loads(self._extra_info)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"extra_info must be valid JSON, got: '{self._extra_info}'") from exc
         self._instance_group_quota.check()
         self._cache_config.check()
 
     def to_json_data(self) -> dict:
-        return {
+        data = {
             "name" : self._name,
             "storage_candidates" : self._storage_candidates,
             "global_quota_group_name" : self._quota_group_name,
@@ -329,8 +339,12 @@ class InstanceGroup(JsonData):
             "quota" : self._instance_group_quota.to_json_data(),
             "cache_config" : self._cache_config.to_json_data(),
             "user_data" : self._user_data,
-            "version" : self._version
+            "version" : self._version,
+            "extra_info" : self._extra_info,
         }
+        if self._event_reporting_storage_candidates:
+            data["event_reporting_storage_candidates"] = self._event_reporting_storage_candidates
+        return data
     
     @classmethod
     def from_json_data(cls, json_data: dict):
@@ -350,7 +364,9 @@ class InstanceGroup(JsonData):
             user_data = json_data["user_data"]
         if JsonData.expect_exist("version", json_data, (str, int)):
             version = int(json_data["version"])
-        return cls(name, storage_candidates, instance_group_quota, quota_group_name, max_instance_count, cache_config, user_data, version)
+        extra_info = json_data.get("extra_info", "")
+        event_reporting_storage_candidates = json_data.get("event_reporting_storage_candidates", [])
+        return cls(name, storage_candidates, instance_group_quota, quota_group_name, max_instance_count, cache_config, user_data, version, extra_info, event_reporting_storage_candidates)
     
 # create or update
 def parse_instance_group_args(is_create: bool):
@@ -472,6 +488,23 @@ def parse_instance_group_args(is_create: bool):
         type=int,
         default=6 if is_create else argparse.SUPPRESS,
         help="search_cache_shard_bits"
+    )
+
+    parser.add_argument(
+        "--extra_info",
+        type=str,
+        default="" if is_create else argparse.SUPPRESS,
+        help=(
+            "Opaque JSON string passed through to clients (e.g. V6D). "
+            "On update, the provided JSON is merged into existing extra_info."
+        )
+    )
+
+    parser.add_argument(
+        "--event_reporting_storage_candidates",
+        type=split_strs,
+        default=[] if is_create else argparse.SUPPRESS,
+        help="event_reporting_storage_candidates, eg. vineyard_default or vineyard_g1,vineyard_g2"
     )
 
     args = parser.parse_args()

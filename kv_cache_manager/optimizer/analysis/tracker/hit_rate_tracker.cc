@@ -2,11 +2,17 @@
 
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <stdexcept>
 
 #include "kv_cache_manager/common/logger.h"
 
 namespace kv_cache_manager {
+namespace {
+[[noreturn]] void LogAndThrowHitRateExportError(const std::string &message) {
+    KVCM_LOG_ERROR("%s", message.c_str());
+    throw std::runtime_error(message);
+}
+} // namespace
 
 HitRateTracker::HitRateTracker() : StatsTracker("HitRateTracker") {}
 
@@ -55,25 +61,21 @@ void HitRateTracker::Export(const std::string &instance_id, const OptimizerConfi
 void HitRateTracker::ExportHitRates(const std::string &instance_id,
                                     const InstanceData &data,
                                     const OptimizerConfig &config) {
+    for (const auto &record : data.read_records) {
+        if (record.block_size_tokens == 0) {
+            LogAndThrowHitRateExportError("Cannot export hit rates for instance " + instance_id +
+                                          ": block_size must be set to a positive value");
+        }
+    }
+
     std::string file_dir = config.output_result_path();
     std::filesystem::create_directories(file_dir);
 
     std::string filename = file_dir + "/" + instance_id + "_hit_rates.csv";
     std::ofstream file(filename);
     if (!file.is_open()) {
-        KVCM_LOG_ERROR("Failed to open file for writing hit rates: %s", filename.c_str());
-        return;
+        LogAndThrowHitRateExportError("Failed to open file for writing hit rates: " + filename);
     }
-
-    auto JoinVecSizeT = [](const std::vector<size_t> &v) {
-        std::ostringstream oss;
-        for (size_t k = 0; k < v.size(); ++k) {
-            if (k)
-                oss << ';';
-            oss << v[k];
-        }
-        return oss.str();
-    };
 
     auto SumVecSizeT = [](const std::vector<size_t> &v) -> size_t {
         size_t s = 0;
@@ -82,58 +84,108 @@ void HitRateTracker::ExportHitRates(const std::string &instance_id,
         return s;
     };
 
-    // ---- 计算逐请求命中率和累计命中率 ----
-    std::vector<double> external_hit_rates;
-    std::vector<double> internal_hit_rates;
-    std::vector<double> acc_external_hit_rates;
-    std::vector<double> acc_internal_hit_rates;
-
-    size_t acc_total_read = 0;
-    size_t acc_ext_hit = 0;
-    size_t acc_int_hit = 0;
-
-    for (const auto &record : data.read_records) {
-        size_t total = record.external_read_blocks + record.internal_read_blocks;
-        double ext_rate = total > 0 ? static_cast<double>(record.external_hit_blocks) / total : 0.0;
-        double int_rate = total > 0 ? static_cast<double>(record.internal_hit_blocks) / total : 0.0;
-        external_hit_rates.push_back(ext_rate);
-        internal_hit_rates.push_back(int_rate);
-
-        acc_total_read += total;
-        acc_ext_hit += record.external_hit_blocks;
-        acc_int_hit += record.internal_hit_blocks;
-        acc_external_hit_rates.push_back(acc_total_read > 0 ? static_cast<double>(acc_ext_hit) / acc_total_read : 0.0);
-        acc_internal_hit_rates.push_back(acc_total_read > 0 ? static_cast<double>(acc_int_hit) / acc_total_read : 0.0);
+    // per-tier 动态命中率
+    size_t num_tiers = 0;
+    std::vector<std::string> tier_names;
+    for (const auto &r : data.read_records) {
+        if (!r.tier_names.empty()) {
+            num_tiers = r.tier_names.size();
+            tier_names = r.tier_names;
+            break;
+        }
     }
+    bool has_tiered_data = (num_tiers > 0);
 
     // ---- 写入 CSV ----
-    file << "TimestampUs,CachedBlocksCurrentInstance,CachedBlocksPerInstance,CachedBlocksAllInstance,"
-            "InternalReadBlocks,ExternalReadBlocks,TotalReadBlocks,InternalHitBlocks,"
-            "InternalHitRate,ExternalHitBlocks,ExternalHitRate,HitRate,AccInternalHitRate,AccExternalHitRate,"
-            "AccHitRate,AccReadBlocks,AccWriteBlocks\n";
+    file << "TimestampNs,CachedBlocks,CachedBlocksAllInstances,ReadBlocks,LocalHitBlocks,RemoteHitBlocks,HitBlocks,"
+            "InputTokens,LocalHitTokens,RemoteHitTokens,HitTokens,LocalHitRate,RemoteHitRate,HitRate,"
+            "AccReadBlocks,AccHitBlocks,AccInputTokens,AccLocalHitTokens,AccRemoteHitTokens,AccHitTokens,"
+            "AccLocalHitRate,AccRemoteHitRate,AccHitRate,AccWriteBlocks";
+    if (has_tiered_data) {
+        for (size_t t = 0; t < num_tiers; ++t) {
+            const auto &name = tier_names[t];
+            file << ",Tier" << t << "(" << name << ")_HitTokens";
+        }
+        for (size_t t = 0; t < num_tiers; ++t) {
+            const auto &name = tier_names[t];
+            file << ",Tier" << t << "(" << name << ")_HitRate";
+        }
+        for (size_t t = 0; t < num_tiers; ++t) {
+            const auto &name = tier_names[t];
+            file << ",AccTier" << t << "(" << name << ")_HitRate";
+        }
+        for (size_t t = 0; t < num_tiers; ++t) {
+            const auto &name = tier_names[t];
+            file << ",Tier" << t << "(" << name << ")_BlockNum";
+        }
+    }
+    file << "\n";
 
-    size_t acc_read_blocks = 0;
     size_t acc_write_blocks = 0;
+    size_t acc_read_blocks = 0;
+    size_t acc_hit_blocks = 0;
+    size_t acc_input_tokens = 0;
+    size_t acc_local_hit_tokens = 0;
+    size_t acc_remote_hit_tokens = 0;
+    size_t acc_hit_tokens = 0;
     size_t write_index = 0;
+    std::vector<size_t> acc_tier_hit_tokens(num_tiers, 0);
 
     for (size_t i = 0; i < data.read_records.size(); ++i) {
         const auto &r = data.read_records[i];
-        size_t current_read = r.internal_read_blocks + r.external_read_blocks;
-        acc_read_blocks += current_read;
+        size_t read_blocks = r.local_read_blocks + r.remote_read_blocks;
+        size_t current_hit = r.local_hit_blocks + r.remote_hit_blocks;
+        size_t block_size_tokens = r.block_size_tokens;
+        size_t input_tokens = r.input_tokens;
+        size_t local_hit_tokens = r.local_hit_blocks * block_size_tokens;
+        size_t remote_hit_tokens = r.remote_hit_blocks * block_size_tokens;
+        size_t hit_tokens = current_hit * block_size_tokens;
+        acc_read_blocks += read_blocks;
+        acc_hit_blocks += current_hit;
+        acc_input_tokens += input_tokens;
+        acc_local_hit_tokens += local_hit_tokens;
+        acc_remote_hit_tokens += remote_hit_tokens;
+        acc_hit_tokens += hit_tokens;
 
         while (write_index < data.write_records.size() &&
-               data.write_records[write_index].timestamp_us <= r.timestamp_us) {
+               data.write_records[write_index].timestamp_ns <= r.timestamp_ns) {
             acc_write_blocks += data.write_records[write_index].write_blocks;
             write_index++;
         }
 
-        file << r.timestamp_us << "," << r.current_cache_blocks << "," << JoinVecSizeT(r.blocks_per_instance) << ","
-             << SumVecSizeT(r.blocks_per_instance) << "," << r.internal_read_blocks << "," << r.external_read_blocks
-             << "," << current_read << "," << r.internal_hit_blocks << "," << internal_hit_rates[i] << ","
-             << r.external_hit_blocks << "," << external_hit_rates[i] << ","
-             << (internal_hit_rates[i] + external_hit_rates[i]) << "," << acc_internal_hit_rates[i] << ","
-             << acc_external_hit_rates[i] << "," << (acc_internal_hit_rates[i] + acc_external_hit_rates[i]) << ","
-             << acc_read_blocks << "," << acc_write_blocks << "\n";
+        file << r.timestamp_ns << "," << r.current_cache_blocks << "," << SumVecSizeT(r.blocks_per_instance) << ","
+             << read_blocks << "," << r.local_hit_blocks << "," << r.remote_hit_blocks << "," << current_hit << ","
+             << input_tokens << "," << local_hit_tokens << "," << remote_hit_tokens << "," << hit_tokens << ","
+             << (input_tokens > 0 ? static_cast<double>(local_hit_tokens) / input_tokens : 0.0) << ","
+             << (input_tokens > 0 ? static_cast<double>(remote_hit_tokens) / input_tokens : 0.0) << ","
+             << (input_tokens > 0 ? static_cast<double>(hit_tokens) / input_tokens : 0.0) << "," << acc_read_blocks
+             << "," << acc_hit_blocks << "," << acc_input_tokens << "," << acc_local_hit_tokens << ","
+             << acc_remote_hit_tokens << "," << acc_hit_tokens << ","
+             << (acc_input_tokens > 0 ? static_cast<double>(acc_local_hit_tokens) / acc_input_tokens : 0.0) << ","
+             << (acc_input_tokens > 0 ? static_cast<double>(acc_remote_hit_tokens) / acc_input_tokens : 0.0) << ","
+             << (acc_input_tokens > 0 ? static_cast<double>(acc_hit_tokens) / acc_input_tokens : 0.0) << ","
+             << acc_write_blocks;
+        if (has_tiered_data) {
+            for (size_t t = 0; t < num_tiers; ++t) {
+                size_t hits = (t < r.per_tier_hit_blocks.size()) ? r.per_tier_hit_blocks[t] : 0;
+                file << "," << (hits * block_size_tokens);
+            }
+            for (size_t t = 0; t < num_tiers; ++t) {
+                size_t hits = (t < r.per_tier_hit_blocks.size()) ? r.per_tier_hit_blocks[t] : 0;
+                size_t tier_hit_tokens = hits * block_size_tokens;
+                acc_tier_hit_tokens[t] += tier_hit_tokens;
+                file << "," << (input_tokens > 0 ? static_cast<double>(tier_hit_tokens) / input_tokens : 0.0);
+            }
+            for (size_t t = 0; t < num_tiers; ++t) {
+                file << ","
+                     << (acc_input_tokens > 0 ? static_cast<double>(acc_tier_hit_tokens[t]) / acc_input_tokens : 0.0);
+            }
+            for (size_t t = 0; t < num_tiers; ++t) {
+                size_t blocks = (t < r.per_tier_blocks.size()) ? r.per_tier_blocks[t] : 0;
+                file << "," << blocks;
+            }
+        }
+        file << "\n";
     }
 
     file.close();

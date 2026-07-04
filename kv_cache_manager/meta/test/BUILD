@@ -64,6 +64,7 @@ cc_library(
     ],
     copts = ["-fno-access-control"],
     deps = [
+        "//kv_cache_manager/meta:meta_cache_base_backend",
         "//kv_cache_manager/meta:meta_storage_backend",
         "//kv_cache_manager/meta:meta_redis_backend",
         "@com_google_googletest//:gtest",
@@ -148,9 +149,41 @@ cc_test(
 )
 
 cc_test(
-    name = "meta_cached_backend_test",
+    name = "meta_storage_backend_manager_test",
     srcs = [
-        "meta_cached_backend_test.cc",
+        "meta_storage_backend_manager_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    data = [],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/meta:cache_location",
+        "//kv_cache_manager/meta:common",
+        "//kv_cache_manager/meta:meta_dummy_backend",
+        "//kv_cache_manager/meta:meta_local_backend",
+        "//kv_cache_manager/meta:meta_storage_backend",
+        "//kv_cache_manager/meta:meta_storage_backend_manager",
+        "//kv_cache_manager/meta:types",
+    ],
+)
+
+cc_test(
+    name = "mpsc_write_queue_test",
+    srcs = [
+        "mpsc_write_queue_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    data = [],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/meta:mpsc_write_queue",
+    ],
+)
+
+cc_test(
+    name = "meta_async_redis_backend_test",
+    srcs = [
+        "meta_async_redis_backend_test.cc",
     ],
     copts = ["-fno-access-control"],
     data = [],
@@ -158,7 +191,28 @@ cc_test(
         ":meta_storage_backend_testlib",
         "//kv_cache_manager/common:unittest",
         "//kv_cache_manager/common/test:redis_client_testlib",
-        "//kv_cache_manager/meta:meta_cached_backend",
-        "//kv_cache_manager/meta:meta_redis_backend",
+        "//kv_cache_manager/meta:meta_async_redis_backend",
+        "//kv_cache_manager/meta:utils",
+    ],
+)
+
+cc_test(
+    name = "meta_storage_backend_manager_real_redis_test",
+    srcs = [
+        "meta_storage_backend_manager_real_redis_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    data = [],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/meta:cache_location",
+        "//kv_cache_manager/meta:common",
+        "//kv_cache_manager/meta:meta_storage_backend",
+        "//kv_cache_manager/meta:meta_storage_backend_manager",
+        "//kv_cache_manager/meta:types",
+    ],
+    tags = [
+        "manual",
+        "redis",
     ],
 )

@@ -11,12 +11,14 @@ namespace kv_cache_manager {
 
 class MetaServiceImpl;
 class MetricsRegistry;
+struct MetricsLifecycle;
 
 class MetaServiceHttp : public CoroHttpService, public MetaServiceMetricsBase {
 public:
     MetaServiceHttp(std::shared_ptr<MetricsRegistry> metrics_registry,
                     std::shared_ptr<MetaServiceImpl> meta_service_impl,
-                    std::shared_ptr<RegistryManager> registry_manager);
+                    std::shared_ptr<RegistryManager> registry_manager,
+                    std::shared_ptr<MetricsLifecycle> metrics_lifecycle = nullptr);
 
     void Init() override;
     void RegisterHandler() override;
@@ -34,6 +36,9 @@ public:
     void GetCacheLocation(coro_http::coro_http_connection *http_conn,
                           proto::meta::GetCacheLocationRequest *request,
                           proto::meta::GetCacheLocationResponse *response);
+    void GetCacheLocationsByBackend(coro_http::coro_http_connection *http_conn,
+                                    proto::meta::GetCacheLocationsByBackendRequest *request,
+                                    proto::meta::GetCacheLocationsByBackendResponse *response);
     void StartWriteCache(coro_http::coro_http_connection *http_conn,
                          proto::meta::StartWriteCacheRequest *request,
                          proto::meta::StartWriteCacheResponse *response);
@@ -50,6 +55,10 @@ public:
     void GetClusterInfo(coro_http::coro_http_connection *http_conn,
                         proto::meta::GetClusterInfoRequest *request,
                         proto::meta::GetClusterInfoResponse *response);
+
+    void ReportEvent(coro_http::coro_http_connection *http_conn,
+                     proto::meta::ReportEventRequest *request,
+                     proto::meta::ReportEventResponse *response);
 
 private:
     std::shared_ptr<MetaServiceImpl> meta_service_impl_;

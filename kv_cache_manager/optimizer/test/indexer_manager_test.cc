@@ -2,6 +2,8 @@
 #include <vector>
 
 #include "kv_cache_manager/common/unittest.h"
+#include "kv_cache_manager/optimizer/analysis/stats_collector.h"
+#include "kv_cache_manager/optimizer/analysis/stats_tracker.h"
 #include "kv_cache_manager/optimizer/config/eviction_config.h"
 #include "kv_cache_manager/optimizer/config/instance_config.h"
 #include "kv_cache_manager/optimizer/config/instance_group_config.h"
@@ -31,6 +33,20 @@ protected:
     OptInstanceConfig CreateTestInstanceConfig(const std::string &instance_id);
     std::vector<OptTierConfig> CreateTestTierConfigs();
     OptInstanceGroupConfig CreateTestInstanceGroupConfig();
+};
+
+class CountingEvictionTracker : public StatsTracker {
+public:
+    CountingEvictionTracker() : StatsTracker("CountingEvictionTracker") {}
+
+    void OnBlockEviction(const std::string &instance_id, BlockEntry *block, int64_t timestamp) override {
+        (void)instance_id;
+        (void)block;
+        (void)timestamp;
+        eviction_count++;
+    }
+
+    size_t eviction_count = 0;
 };
 
 OptInstanceConfig OptIndexerManagerTest::CreateTestInstanceConfig(const std::string &instance_id) {
@@ -99,10 +115,11 @@ TEST_F(OptIndexerManagerTest, CreateOptIndexer) {
     auto result = indexer->InsertOnly(block_keys, 1000);
     EXPECT_EQ(result.inserted_keys.size(), 5);
 
-    std::vector<std::vector<int64_t>> hits;
-    auto inserted2 = indexer->InsertWithQuery(block_keys, 2000, hits);
-    EXPECT_EQ(inserted2.size(), 0); // 已存在
-    EXPECT_EQ(hits.size(), 1);      // 命中
+    // 验证 PrefixQuery 可以查询到之前插入的数据
+    QueryHit query_hit;
+    BlockMask block_mask = std::vector<bool>(block_keys.size(), true);
+    indexer->PrefixQuery(block_keys, block_mask, 2000, &query_hit);
+    EXPECT_EQ(query_hit.local_hit_block_num, 5);
 }
 
 TEST_F(OptIndexerManagerTest, CreateMultipleOptIndexers) {
@@ -176,7 +193,8 @@ TEST_F(OptIndexerManagerTest, CheckAndEvict) {
     indexer_manager_->CreateOptIndexer(instance_config, tier_configs, false);
 
     // 检查并触发驱逐，传入测试时间戳
-    indexer_manager_->CheckAndEvict("instance1", 1000);
+    auto evicted_blocks = indexer_manager_->CheckAndEvict("instance1");
+    indexer_manager_->CleanEvictedBlocks(evicted_blocks, 1000);
 
     // 不应该崩溃
     SUCCEED();
@@ -239,13 +257,86 @@ TEST_F(OptIndexerManagerTest, RegisterInstanceGroupsAndInstances) {
 
 TEST_F(OptIndexerManagerTest, CheckAndEvictNonExistentInstance) {
     // 检查不存在的实例
-    indexer_manager_->CheckAndEvict("non_existent_instance", 1000);
+    auto evicted_blocks = indexer_manager_->CheckAndEvict("non_existent_instance");
+    indexer_manager_->CleanEvictedBlocks(evicted_blocks, 1000);
 
     // 不应该崩溃
     SUCCEED();
 }
 
+TEST_F(OptIndexerManagerTest, CleanEvictedBlocksDeduplicatesEmptyBlocks) {
+    auto instance_config = CreateTestInstanceConfig("instance1");
+    auto tier_configs = CreateTestTierConfigs();
+
+    ASSERT_TRUE(indexer_manager_->CreateOptIndexer(instance_config, tier_configs, false));
+    auto indexer = indexer_manager_->GetOptIndexer("instance1");
+    ASSERT_NE(indexer, nullptr);
+
+    auto collector = std::make_shared<StatsCollector>();
+    auto *tracker = collector->EmplaceTracker<CountingEvictionTracker>();
+    indexer->SetStatsCollector(collector);
+
+    indexer->InsertOnly({1}, 1000);
+    auto *block = indexer->root_->children.at(1)->blocks[0].get();
+    block->location_map.clear();
+
+    OptIndexerManager::EvictedBlocks evicted_blocks;
+    evicted_blocks["instance1"] = {block, block};
+    indexer_manager_->CleanEvictedBlocks(evicted_blocks, 2000);
+
+    EXPECT_EQ(tracker->eviction_count, 1);
+}
+
 TEST_F(OptIndexerManagerTest, GetCurrentInstanceUsageNonExistent) {
     auto usage = indexer_manager_->GetCurrentInstanceUsage("non_existent_instance");
     EXPECT_EQ(usage, 0);
+}
+
+TEST_F(OptIndexerManagerTest, EvictExpiredBeforeAccessOnlyExpiresLocationWithoutNodeCleanup) {
+    OptInstanceConfig ttl_instance;
+    ttl_instance.set_instance_id("instance_ttl");
+    ttl_instance.set_instance_group_name("ttl_group");
+    ttl_instance.set_block_size(1024);
+    ttl_instance.set_eviction_policy_type(EvictionPolicyType::POLICY_TTL);
+    TtlParams ttl_params;
+    ttl_params.fallback_on_pressure = true;
+    ttl_instance.set_eviction_policy_param(ttl_params);
+
+    auto tier_configs = CreateTestTierConfigs();
+    ASSERT_TRUE(indexer_manager_->CreateOptIndexer(ttl_instance, tier_configs, false));
+
+    OptInstanceGroupConfig ttl_group;
+    ttl_group.set_group_name("ttl_group");
+    ttl_group.set_quota_capacity(1024 * 1024 * 100);
+    ttl_group.set_used_percentage(1.0);
+    ttl_group.set_hierarchical_eviction_enabled(false);
+    ttl_group.set_storages(tier_configs);
+    ttl_group.set_instances({ttl_instance});
+
+    std::unordered_map<std::string, OptInstanceGroupConfig> groups;
+    groups["ttl_group"] = ttl_group;
+    indexer_manager_->RegisterInstanceGroups(groups);
+
+    std::unordered_map<std::string, OptInstanceConfig> instances;
+    instances["instance_ttl"] = ttl_instance;
+    indexer_manager_->RegisterInstances(instances);
+
+    auto indexer = indexer_manager_->GetOptIndexer("instance_ttl");
+    ASSERT_NE(indexer, nullptr);
+
+    indexer->InsertOnly({1}, 1000, 100); // 1200 时过期
+    indexer->InsertOnly({2}, 1000, 0);   // 永不过期
+    // TTL 策略使用内部已知时间判断过期，通过后续写入推进时间到 1200
+    indexer->InsertOnly({3}, 1200, 0);
+
+    auto *block1 = indexer->root_->children.at(1)->blocks[0].get();
+    auto *block2 = indexer->root_->children.at(2)->blocks[0].get();
+    ASSERT_FALSE(block1->location_map.empty());
+    ASSERT_FALSE(block2->location_map.empty());
+
+    auto evicted_blocks = indexer_manager_->EvictExpiredBeforeAccess("instance_ttl", 1200);
+    EXPECT_FALSE(evicted_blocks.empty());
+    // 不做节点清理，仅验证 TTL 过期清理会清空过期 block 的 location
+    EXPECT_TRUE(block1->location_map.empty());
+    EXPECT_FALSE(block2->location_map.empty());
 }

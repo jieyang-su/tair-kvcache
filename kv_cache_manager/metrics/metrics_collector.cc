@@ -52,12 +52,17 @@ DEFINE_METRICS_NAME_FOR_SERVICE(request_queue_size);
 
 // manager metrics
 #define DEFINE_METRICS_NAME_FOR_MANAGER(name) DEFINE_METRICS_NAME_(ServiceMetricsCollector, manager, name)
+#define REGISTER_COUNTER_METRICS_FOR_MANAGER(name)                                                                     \
+    REGISTER_METRICS_W_TAGS_COUNTER_(metrics_registry_, manager, name, metrics_tags_)
 #define REGISTER_GAUGE_METRICS_FOR_MANAGER(name)                                                                       \
     REGISTER_METRICS_W_TAGS_GAUGE_(metrics_registry_, manager, name, metrics_tags_)
 
 DEFINE_METRICS_NAME_FOR_MANAGER(request_key_count);
 DEFINE_METRICS_NAME_FOR_MANAGER(prefix_match_len);
+DEFINE_METRICS_NAME_FOR_MANAGER(get_cache_location_query_block_counter);
+DEFINE_METRICS_NAME_FOR_MANAGER(get_cache_location_hit_block_counter);
 DEFINE_METRICS_NAME_FOR_MANAGER(prefix_match_time_us);
+DEFINE_METRICS_NAME_FOR_MANAGER(batch_get_time_us);
 DEFINE_METRICS_NAME_FOR_MANAGER(lock_write_location_retry_times);
 DEFINE_METRICS_NAME_FOR_MANAGER(write_cache_io_cost_us);
 DEFINE_METRICS_NAME_FOR_MANAGER(filter_write_cache_time_us);
@@ -73,7 +78,8 @@ DEFINE_METRICS_NAME_FOR_MANAGER(batch_update_location_time_us);
     REGISTER_METRICS_W_TAGS_GAUGE_(metrics_registry_, meta_searcher, name, metrics_tags_)
 
 DEFINE_METRICS_NAME_FOR_META_SEARCHER(indexer_get_time_us);
-DEFINE_METRICS_NAME_FOR_META_SEARCHER(indexer_read_modify_write_time_us);
+DEFINE_METRICS_NAME_FOR_META_SEARCHER(indexer_read_modify_write_block_time_us);
+DEFINE_METRICS_NAME_FOR_META_SEARCHER(indexer_read_modify_write_location_time_us);
 DEFINE_METRICS_NAME_FOR_META_SEARCHER(index_serialize_time_us);
 DEFINE_METRICS_NAME_FOR_META_SEARCHER(index_deserialize_time_us);
 DEFINE_METRICS_NAME_FOR_META_SEARCHER(indexer_query_times);
@@ -91,15 +97,21 @@ DEFINE_METRICS_NAME_FOR_META_INDEXER(search_cache_miss_count);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(search_cache_hit_ratio);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(io_data_size);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(put_io_time_us);
-DEFINE_METRICS_NAME_FOR_META_INDEXER(update_io_time_us);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(upsert_io_time_us);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(lock_wait_time_us);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(delete_io_time_us);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(get_io_time_us);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(rand_io_time_us);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(rmw_get_io_time_us);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(read_modify_write_put_key_count);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(read_modify_write_update_key_count);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(read_modify_write_skip_key_count);
 DEFINE_METRICS_NAME_FOR_META_INDEXER(read_modify_write_delete_key_count);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(async_enqueue_timeout_key_count);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(async_enqueue_time_us);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(cache_backend_put_time_us);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(cache_backend_upsert_time_us);
+DEFINE_METRICS_NAME_FOR_META_INDEXER(cache_backend_delete_time_us);
 
 ServiceMetricsCollector::ServiceMetricsCollector(std::shared_ptr<MetricsRegistry> metrics_registry) noexcept
     : MetricsCollector(std::move(metrics_registry)) {}
@@ -123,7 +135,10 @@ bool ServiceMetricsCollector::Init() {
     // manager metrics
     REGISTER_GAUGE_METRICS_FOR_MANAGER(request_key_count);
     REGISTER_GAUGE_METRICS_FOR_MANAGER(prefix_match_len);
+    REGISTER_COUNTER_METRICS_FOR_MANAGER(get_cache_location_query_block_counter);
+    REGISTER_COUNTER_METRICS_FOR_MANAGER(get_cache_location_hit_block_counter);
     REGISTER_GAUGE_METRICS_FOR_MANAGER(prefix_match_time_us);
+    REGISTER_GAUGE_METRICS_FOR_MANAGER(batch_get_time_us);
     REGISTER_GAUGE_METRICS_FOR_MANAGER(lock_write_location_retry_times);
     REGISTER_GAUGE_METRICS_FOR_MANAGER(write_cache_io_cost_us);
     REGISTER_GAUGE_METRICS_FOR_MANAGER(filter_write_cache_time_us);
@@ -135,7 +150,8 @@ bool ServiceMetricsCollector::Init() {
 
     // meta searcher metrics
     REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(indexer_get_time_us);
-    REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(indexer_read_modify_write_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(indexer_read_modify_write_block_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(indexer_read_modify_write_location_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(index_serialize_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(index_deserialize_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_SEARCHER(indexer_query_times);
@@ -149,15 +165,21 @@ bool ServiceMetricsCollector::Init() {
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(search_cache_hit_ratio);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(io_data_size);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(put_io_time_us);
-    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(update_io_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(upsert_io_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(lock_wait_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(delete_io_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(get_io_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(rand_io_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(rmw_get_io_time_us);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(read_modify_write_put_key_count);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(read_modify_write_update_key_count);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(read_modify_write_skip_key_count);
     REGISTER_GAUGE_METRICS_FOR_META_INDEXER(read_modify_write_delete_key_count);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(async_enqueue_timeout_key_count);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(async_enqueue_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(cache_backend_put_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(cache_backend_upsert_time_us);
+    REGISTER_GAUGE_METRICS_FOR_META_INDEXER(cache_backend_delete_time_us);
 
     return true;
 }
@@ -298,6 +320,22 @@ bool CacheManagerGroupMetricsCollector::Init() {
 
 DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector, cache_manager_instance, key_count);
 DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector, cache_manager_instance, byte_size);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector,
+                                      cache_manager_instance,
+                                      async_queue_max_size);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector,
+                                      cache_manager_instance,
+                                      async_queue_avg_size);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector,
+                                      cache_manager_instance,
+                                      async_flush_key_count);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector,
+                                      cache_manager_instance,
+                                      async_batch_flush_time_us);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector,
+                                      cache_manager_instance,
+                                      async_pipeline_error_count);
+DEFINE_METRICS_NAME_FOR_CACHE_MANAGER(CacheManagerInstanceMetricsCollector, cache_manager_instance, max_lru_age_us);
 
 CacheManagerInstanceMetricsCollector::CacheManagerInstanceMetricsCollector(
     std::shared_ptr<MetricsRegistry> metrics_registry) noexcept
@@ -314,6 +352,12 @@ bool CacheManagerInstanceMetricsCollector::Init() {
 
     REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, key_count);
     REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, byte_size);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, max_lru_age_us);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, async_queue_max_size);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, async_queue_avg_size);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, async_flush_key_count);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, async_batch_flush_time_us);
+    REGISTER_GAUGE_METRICS_FOR_CACHE_MANAGER(cache_manager_instance, async_pipeline_error_count);
 
     return true;
 }

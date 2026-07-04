@@ -33,6 +33,10 @@ public:
                           const proto::meta::GetCacheLocationRequest *request,
                           proto::meta::GetCacheLocationResponse *response);
 
+    void GetCacheLocationsByBackend(RequestContext *request_context,
+                                    const proto::meta::GetCacheLocationsByBackendRequest *request,
+                                    proto::meta::GetCacheLocationsByBackendResponse *response);
+
     void GetCacheLocationLen(RequestContext *request_context,
                              const proto::meta::GetCacheLocationLenRequest *request,
                              proto::meta::GetCacheLocationLenResponse *response);
@@ -60,6 +64,10 @@ public:
     void GetClusterInfo(RequestContext *request_context,
                         const proto::meta::GetClusterInfoRequest *request,
                         proto::meta::GetClusterInfoResponse *response);
+
+    void ReportEvent(RequestContext *request_context,
+                     const proto::meta::ReportEventRequest *request,
+                     proto::meta::ReportEventResponse *response);
 
 private:
     std::shared_ptr<CacheManager> cache_manager_;

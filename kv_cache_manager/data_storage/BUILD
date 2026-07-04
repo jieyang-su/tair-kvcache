@@ -4,16 +4,21 @@ cc_library(
     name = "data_storage",
     srcs = [
         "data_storage_manager.cc",
+        "dummy_backend.cc",
         "hf3fs_backend.cc",
         "mooncake_backend.cc",
         "nfs_backend.cc",
+        "vineyard_backend.cc",
     ],
     hdrs = [
         "data_storage_backend.h",
         "data_storage_manager.h",
+        "dummy_backend.h",
+        "event_reporting_backend.h",
         "hf3fs_backend.h",
         "mooncake_backend.h",
         "nfs_backend.h",
+        "vineyard_backend.h",
     ],
     deps = [
         # 不一定用
@@ -40,6 +45,7 @@ cc_library(
     ],
     deps = [
         "//kv_cache_manager/common",
+        "//kv_cache_manager/common:service_discovery",
         "//kv_cache_manager/common:standard_uri",
     ],
 )

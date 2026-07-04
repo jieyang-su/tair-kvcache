@@ -6,7 +6,7 @@
 #include <map>
 #include <string>
 
-#include "cache_location.h"
+#include "kv_cache_manager/meta/cache_location.h"
 
 namespace kv_cache_manager {
 
@@ -15,9 +15,9 @@ using CheckLocDataExistFunc = std::function<bool(const CacheLocation &loc)>;
 class SelectLocationPolicy {
 public:
     // for match : select best location
-    virtual CacheLocation *SelectForMatch(CacheLocationMap &location_map,
-                                          CheckLocDataExistFunc check_loc_data_exist,
-                                          std::vector<std::string> &out_prune_loc_ids) const = 0;
+    virtual CacheLocationConstPtr SelectForMatch(CacheLocationMap &location_map,
+                                                 CheckLocDataExistFunc check_loc_data_exist,
+                                                 std::vector<std::string> &out_prune_loc_ids) const = 0;
 
     // for write : return true if exists means that not need write again
     virtual bool ExistsForWrite(const CacheLocationMap &location_map,
@@ -39,9 +39,9 @@ public:
 
 class WeightSLPolicy : public SelectLocationPolicy {
 public:
-    CacheLocation *SelectForMatch(CacheLocationMap &location_map,
-                                  CheckLocDataExistFunc check_loc_data_exist,
-                                  std::vector<std::string> &out_prune_loc_ids) const override;
+    CacheLocationConstPtr SelectForMatch(CacheLocationMap &location_map,
+                                         CheckLocDataExistFunc check_loc_data_exist,
+                                         std::vector<std::string> &out_prune_loc_ids) const override;
     bool ExistsForWrite(const CacheLocationMap &location_map,
                         CheckLocDataExistFunc check_loc_data_exist,
                         std::vector<std::string> &out_prune_loc_ids) const override;
@@ -49,6 +49,11 @@ public:
                         const std::vector<std::string> &requested_spec_names,
                         CheckLocDataExistFunc check_loc_data_exist,
                         std::vector<std::string> &out_prune_loc_ids) const override;
+    bool ExistsForWriteWithMinCount(const CacheLocationMap &location_map,
+                                    int32_t min_count,
+                                    const std::vector<std::string> &requested_spec_names,
+                                    CheckLocDataExistFunc check_loc_data_exist,
+                                    std::vector<std::string> &out_prune_loc_ids) const;
 
 protected:
     virtual uint32_t GetWeight(CacheLocationMap::const_reference kv) const = 0;
@@ -63,26 +68,32 @@ NamedStorageWeightedSLPolicy : 解析uri, 如果有相同类型的多个存储�
 
 class StaticWeightSLPolicy : public WeightSLPolicy {
 public:
-    using WeightArray = std::array<uint32_t, 5>;
+    using WeightArray = std::array<uint32_t, static_cast<std::size_t>(DataStorageType::COUNT)>;
 
 protected:
     uint32_t GetWeight(CacheLocationMap::const_reference kv) const override;
     struct StorageTypeWeights {
-        static constexpr uint32_t NFS = 5;          // NFS存储权重较高
-        static constexpr uint32_t MOONCAKE = 3;     // Mooncake存储权重中等
-        static constexpr uint32_t THREEFS = 3;      // 3FS存储权重较低
-        static constexpr uint32_t TAIR_MEMPOOL = 3; // Tair存储权重最低
-        static constexpr uint32_t DEFAULT = 1;      // 默认权重
+        static constexpr uint32_t NFS = 5;
+        static constexpr uint32_t MOONCAKE = 3;
+        static constexpr uint32_t THREEFS = 3;
+        static constexpr uint32_t TAIR_MEMPOOL = 3;
+        static constexpr uint32_t DEFAULT = 1;
+        static constexpr uint32_t VCNS_HF3FS = THREEFS;
+        static constexpr uint32_t VINEYARD = 10;
     };
 
 protected:
-    // 直接用一个简单的映射表来选权重(映射表顺序与DataStorageType一样）
-    // 代替switch-case
-    inline static WeightArray default_storage_weights_{StorageTypeWeights::DEFAULT,
-                                                       StorageTypeWeights::THREEFS,
-                                                       StorageTypeWeights::MOONCAKE,
-                                                       StorageTypeWeights::TAIR_MEMPOOL,
-                                                       StorageTypeWeights::NFS};
+    // Order follows DataStorageType enum.
+    inline static WeightArray default_storage_weights_{
+        StorageTypeWeights::DEFAULT,
+        StorageTypeWeights::THREEFS,
+        StorageTypeWeights::MOONCAKE,
+        StorageTypeWeights::TAIR_MEMPOOL,
+        StorageTypeWeights::NFS,
+        StorageTypeWeights::VCNS_HF3FS,
+        StorageTypeWeights::DEFAULT,
+        StorageTypeWeights::VINEYARD,
+    };
 
     WeightArray &storage_weights_ = default_storage_weights_;
 };

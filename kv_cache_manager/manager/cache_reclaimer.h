@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <climits>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -82,6 +83,13 @@ struct PlanExecuteResult;
  */
 class CacheReclaimer {
 public:
+    struct AgeStats {
+        int64_t min_us = INT64_MAX;
+        int64_t max_us = 0;
+        int64_t avg_us = 0;
+        void Clear();
+    };
+
     /**
      * @brief Delete default constructor
      */
@@ -261,6 +269,8 @@ public:
 private:
     static constexpr double kEpsilon = 1e-9;
     static constexpr std::size_t kSizeLimit = 1 << 16;
+    // timeout for key sampling worker futures to prevent indefinite blocking
+    static constexpr std::uint32_t kFutureTimeoutMs = 60000;
     static const std::string kTraceIDPrefix;
     static std::string GenTraceID();
 
@@ -310,6 +320,10 @@ private:
     // default to 100
     std::atomic<std::uint32_t> sleep_interval_ms_;
 
+    // controls the maximum wait time for key sampling worker futures
+    // default to kFutureTimeoutMs
+    std::atomic<std::uint32_t> future_timeout_ms_;
+
     std::mutex task_queue_mutex_;
     std::condition_variable cv_task_queue_;
     std::deque<std::function<void()>> task_queue_;
@@ -317,6 +331,10 @@ private:
     std::vector<std::thread> workers_;
     void WorkerRoutine();
     void SubmitTask(const std::function<void()> &task);
+
+    // tracks the number of sampling tasks currently executing on
+    // workers; incremented on submit, decremented on task completion
+    std::atomic<std::size_t> in_flight_sampling_tasks_{0};
 
     // a singly-linked list to help inspect the deleting result in a
     // non-blocking way
@@ -365,6 +383,7 @@ private:
         // slot 3: DATA_STORAGE_TYPE_TAIR_MEMPOOL exceed flag
         // slot 4: DATA_STORAGE_TYPE_NFS exceed flag
         // slot 5: DATA_STORAGE_TYPE_VCNS_HF3FS **UNUSED** (merged into HF3FS)
+        // slot 6: DATA_STORAGE_TYPE_DUMMY exceed flag (testing only)
         array_t_ water_level_exceed_by_type_;
     };
 
@@ -468,7 +487,7 @@ private:
     void ReclaimCron() noexcept;
 
     // below are helper routines for internal usage
-    bool DoKeySampling(RequestContext *request_context,
+    bool DoKeySampling(const std::shared_ptr<RequestContext> &request_context,
                        const std::shared_ptr<const InstanceInfo> &instance_info,
                        std::vector<std::int64_t> &out_keys,
                        std::vector<std::map<std::string, std::string>> &out_maps) noexcept;
@@ -477,13 +496,15 @@ private:
                         const std::shared_ptr<const InstanceInfo> &instance_info,
                         const std::vector<std::int64_t> &sampled_keys,
                         const std::vector<std::map<std::string, std::string>> &property_maps,
-                        std::vector<std::int64_t> &out_batch) const noexcept;
+                        std::vector<std::int64_t> &out_batch,
+                        AgeStats &out_lru_age_stats) const noexcept;
 
     bool FilterLocID(RequestContext *request_context,
                      const std::shared_ptr<const InstanceInfo> &instance_info,
                      const std::vector<std::int64_t> &batch,
                      const WaterLevelExceed &water_level_exceed,
-                     std::vector<std::vector<std::string>> &out_loc_ids) const noexcept;
+                     std::vector<std::vector<std::string>> &out_loc_ids,
+                     AgeStats &out_create_age_stats) const noexcept;
 
     void SubmitDelReq(const std::shared_ptr<RequestContext> &request_context,
                       const std::shared_ptr<const InstanceInfo> &instance_info,
@@ -510,6 +531,13 @@ private:
     KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_lru_batch_duration_us)
     KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_lru_filter_duration_us)
     KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_lru_submit_duration_us)
+
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_lru_age_min_us)
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_lru_age_max_us)
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_lru_age_avg_us)
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_create_age_min_us)
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_create_age_max_us)
+    KVCM_GAUGE_METRICS_FOR_CACHE_RECLAIMER(reclaim_batch_create_age_avg_us)
 };
 
 #undef KVCM_COUNTER_METRICS_FOR_CACHE_RECLAIMER

@@ -5,6 +5,7 @@
 #include "kv_cache_manager/optimizer/config/eviction_config.h"
 #include "kv_cache_manager/optimizer/config/types.h"
 #include "kv_cache_manager/optimizer/eviction_policy/lru.h"
+#include "kv_cache_manager/optimizer/eviction_policy/random_lru.h"
 
 using namespace kv_cache_manager;
 
@@ -17,6 +18,29 @@ public:
     }
 
 protected:
+    BlockEntry CreateBlock(int64_t key, int64_t last_access_time) {
+        BlockEntry block;
+        block.key = key;
+        block.last_access_time = last_access_time;
+        block.location_map[policy_->name()] = TierStat{0, last_access_time, -1};
+        return block;
+    }
+
+    BlockEntry CreateSharedBlock(int64_t key, int64_t timestamp) {
+        BlockEntry block;
+        block.key = key;
+        block.writing_time = timestamp;
+        block.last_access_time = timestamp;
+        block.location_map["shared"] = TierStat{};
+        return block;
+    }
+
+    void AccessBlock(BlockEntry *block, int64_t timestamp) {
+        block->last_access_time = timestamp;
+        block->location_map[policy_->name()].last_access_time = timestamp;
+        policy_->OnBlockAccessedWithOptions(block, timestamp, true);
+    }
+
     std::shared_ptr<LruEvictionPolicy> policy_;
 };
 
@@ -26,13 +50,8 @@ TEST_F(LruEvictionPolicyTest, BasicInitialization) {
 }
 
 TEST_F(LruEvictionPolicyTest, OnBlockWritten) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
-
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
 
     policy_->OnBlockWritten(&block1);
     EXPECT_EQ(policy_->size(), 1);
@@ -42,19 +61,14 @@ TEST_F(LruEvictionPolicyTest, OnBlockWritten) {
 }
 
 TEST_F(LruEvictionPolicyTest, OnBlockAccessed) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
-
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
 
     policy_->OnBlockWritten(&block1);
     policy_->OnBlockWritten(&block2);
 
     // 访问block1,将其移到LRU链表头部
-    policy_->OnBlockAccessed(&block1, 3000);
+    AccessBlock(&block1, 3000);
     EXPECT_EQ(block1.last_access_time, 3000);
 
     // 驱逐应该先驱逐block2(最久未使用)
@@ -64,17 +78,9 @@ TEST_F(LruEvictionPolicyTest, OnBlockAccessed) {
 }
 
 TEST_F(LruEvictionPolicyTest, EvictBlocks) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
-
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
-
-    BlockEntry block3;
-    block3.key = 3;
-    block3.last_access_time = 3000;
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
+    auto block3 = CreateBlock(3, 3000);
 
     policy_->OnBlockWritten(&block1);
     policy_->OnBlockWritten(&block2);
@@ -92,14 +98,39 @@ TEST_F(LruEvictionPolicyTest, EvictBlocks) {
     EXPECT_EQ(policy_->size(), 1);
 }
 
-TEST_F(LruEvictionPolicyTest, EvictAllBlocks) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
+TEST_F(LruEvictionPolicyTest, SharedModeUsesBlockAccessTimeWhenTierTimeIsUninitialized) {
+    LruParams params;
+    params.sample_rate = 1.0;
+    params.shard_count = 2;
+    params.sample_times = 2;
+    auto policy = std::make_shared<LruEvictionPolicy>("shared", params);
 
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
+    auto old_block = CreateSharedBlock(1, 1000); // shard 1
+    auto new_block = CreateSharedBlock(2, 2000); // shard 0
+
+    policy->OnBlockWritten(&old_block);
+    policy->OnBlockWritten(&new_block);
+
+    auto evicted = policy->EvictBlocks(1);
+    ASSERT_EQ(evicted.size(), 1);
+    EXPECT_EQ(evicted[0]->key, 1);
+}
+
+TEST_F(LruEvictionPolicyTest, RandomLruSharedModeStoresBlockAccessTimeWhenTierTimeIsUninitialized) {
+    RandomLruParams params;
+    params.sample_rate = 1.0;
+    RandomLruEvictionPolicy policy("shared", params, 10);
+
+    auto block = CreateSharedBlock(1, 1234);
+    policy.OnBlockWritten(&block);
+
+    ASSERT_EQ(policy.timestamps_.size(), 1);
+    EXPECT_EQ(policy.timestamps_[0], 1234);
+}
+
+TEST_F(LruEvictionPolicyTest, EvictAllBlocks) {
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
 
     policy_->OnBlockWritten(&block1);
     policy_->OnBlockWritten(&block2);
@@ -113,13 +144,8 @@ TEST_F(LruEvictionPolicyTest, EvictAllBlocks) {
 }
 
 TEST_F(LruEvictionPolicyTest, OnNodeWritten) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
-
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
 
     std::vector<BlockEntry *> blocks = {&block1, &block2};
     policy_->OnNodeWritten(blocks);
@@ -128,9 +154,7 @@ TEST_F(LruEvictionPolicyTest, OnNodeWritten) {
 }
 
 TEST_F(LruEvictionPolicyTest, EvictMoreThanAvailable) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
+    auto block1 = CreateBlock(1, 1000);
 
     policy_->OnBlockWritten(&block1);
     EXPECT_EQ(policy_->size(), 1);
@@ -143,26 +167,18 @@ TEST_F(LruEvictionPolicyTest, EvictMoreThanAvailable) {
 }
 
 TEST_F(LruEvictionPolicyTest, LruOrderAfterMultipleAccesses) {
-    BlockEntry block1;
-    block1.key = 1;
-    block1.last_access_time = 1000;
-
-    BlockEntry block2;
-    block2.key = 2;
-    block2.last_access_time = 2000;
-
-    BlockEntry block3;
-    block3.key = 3;
-    block3.last_access_time = 3000;
+    auto block1 = CreateBlock(1, 1000);
+    auto block2 = CreateBlock(2, 2000);
+    auto block3 = CreateBlock(3, 3000);
 
     policy_->OnBlockWritten(&block1);
     policy_->OnBlockWritten(&block2);
     policy_->OnBlockWritten(&block3);
 
     // 多次访问不同的块
-    policy_->OnBlockAccessed(&block1, 4000);
-    policy_->OnBlockAccessed(&block3, 5000);
-    policy_->OnBlockAccessed(&block2, 6000);
+    AccessBlock(&block1, 4000);
+    AccessBlock(&block3, 5000);
+    AccessBlock(&block2, 6000);
 
     // block3应该是最久未使用的(最后访问时间是5000,而block1是4000,block2是6000)
     // LRU驱逐最久未访问的,即最后访问时间最小的

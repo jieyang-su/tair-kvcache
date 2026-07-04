@@ -10,20 +10,17 @@ class BaseConverter(ABC):
     def __init__(self, default_instance_id: str = 'instance',
                  instance_block_sizes: Dict[str, int] = None,
                  mode: str = 'optimizer',
-                 keep_tokens: bool = False,
                  **kwargs):
         """
         Args:
             default_instance_id: 默认实例ID (当输入格式没有instance信息时使用)
             instance_block_sizes: 每个instance的block_size映射 {instance_id: block_size}
-            mode: 输出模式 ('optimizer' 或 'inference')
-            keep_tokens: 是否保留tokens字段（默认False以减少文件大小，调试时可设为True）
+            mode: 输出模式 ('optimizer')
         """
         self.default_instance_id = default_instance_id
         self.default_block_size = 16  # 硬编码默认值
         self.instance_block_sizes = instance_block_sizes or {}
         self.mode = mode
-        self.keep_tokens = keep_tokens
         # 按instance分组管理时间戳,避免不同instance间的冲突
         self.used_timestamps: Dict[str, Set[int]] = {}
 
@@ -38,6 +35,12 @@ class BaseConverter(ABC):
             该instance的block_size,未指定则返回默认值16
         """
         return self.instance_block_sizes.get(instance_id, self.default_block_size)
+
+    def _truncate_keys_to_full_blocks(self, keys: list, input_len: int, instance_id: str) -> list:
+        block_size = self.get_block_size(instance_id)
+        if block_size <= 0:
+            raise ValueError(f"block_size must be positive for instance {instance_id}")
+        return list(keys[:input_len // block_size])
 
     @abstractmethod
     def convert_to_traces(self, input_file: str) -> list:
@@ -60,7 +63,7 @@ class BaseConverter(ABC):
 
         Args:
             instance_id: 实例ID
-            base_timestamp: 基础时间戳
+            base_timestamp: 基础时间戳（纳秒）
 
         Returns:
             无冲突的时间戳
@@ -77,7 +80,7 @@ class BaseConverter(ABC):
 
     def _create_get_trace(
         self,
-        timestamp_us: int,
+        timestamp_ns: int,
         keys: list,
         instance_id: str = None,
         **kwargs
@@ -86,7 +89,7 @@ class BaseConverter(ABC):
         创建GetLocationSchemaTrace (optimizer模式)
 
         Args:
-            timestamp_us: 微秒时间戳
+            timestamp_ns: 纳秒时间戳
             keys: block ID列表
             instance_id: 实例ID (None则使用default_instance_id)
             **kwargs: 其他可选字段
@@ -99,23 +102,30 @@ class BaseConverter(ABC):
             instance_id = self.default_instance_id
 
         # 分配无冲突的时间戳
-        timestamp_us = self._allocate_timestamp(instance_id, timestamp_us)
+        timestamp_ns = self._allocate_timestamp(instance_id, timestamp_ns)
 
-        # tokens字段处理: 根据keep_tokens决定是否保留
-        tokens = kwargs.get('tokens', []) if self.keep_tokens else []
-        
+        if 'input_len' not in kwargs:
+            raise ValueError("optimizer get trace requires input_len")
+        input_len = int(kwargs['input_len'])
+        if input_len <= 0:
+            raise ValueError("optimizer get trace input_len must be positive")
+        keys = self._truncate_keys_to_full_blocks(keys, input_len, instance_id)
+        block_mask = kwargs.get('block_mask', [])
+        if isinstance(block_mask, list) and len(block_mask) > len(keys):
+            block_mask = block_mask[:len(keys)]
+
         trace = {
             'type': 'get',  # 显式标记为Get trace
             # OptimizerSchemaTrace 基础字段
             'instance_id': instance_id,
-            'trace_id': f"trace_{instance_id}_{timestamp_us}",
-            'timestamp_us': timestamp_us,
-            'tokens': tokens,
+            'trace_id': f"trace_{instance_id}_{timestamp_ns}",
+            'timestamp_ns': timestamp_ns,
             'keys': keys,
+            'input_len': input_len,
 
             # GetLocationSchemaTrace 字段
             'query_type': kwargs.get('query_type', 'prefix_match'),
-            'block_mask': kwargs.get('block_mask', []),
+            'block_mask': block_mask,
             'sw_size': kwargs.get('sw_size', 0),
             'location_spec_names': kwargs.get('location_spec_names', []),
         }
@@ -124,7 +134,7 @@ class BaseConverter(ABC):
 
     def _create_write_trace(
         self,
-        timestamp_us: int,
+        timestamp_ns: int,
         keys: list,
         instance_id: str = None,
         **kwargs
@@ -133,7 +143,7 @@ class BaseConverter(ABC):
         创建WriteCacheSchemaTrace (optimizer模式)
 
         Args:
-            timestamp_us: 微秒时间戳
+            timestamp_ns: 纳秒时间戳
             keys: block ID列表
             instance_id: 实例ID (None则使用default_instance_id)
             **kwargs: 其他可选字段
@@ -146,77 +156,15 @@ class BaseConverter(ABC):
             instance_id = self.default_instance_id
 
         # 分配无冲突的时间戳
-        timestamp_us = self._allocate_timestamp(instance_id, timestamp_us)
+        timestamp_ns = self._allocate_timestamp(instance_id, timestamp_ns)
 
-        # tokens字段处理: 根据keep_tokens决定是否保留
-        tokens = kwargs.get('tokens', []) if self.keep_tokens else []
-        
         trace = {
             'type': 'write',  # 显式标记为Write trace
             # OptimizerSchemaTrace 基础字段
             'instance_id': instance_id,
-            'trace_id': f"trace_{instance_id}_{timestamp_us}",
-            'timestamp_us': timestamp_us,
-            'tokens': tokens,
+            'trace_id': f"trace_{instance_id}_{timestamp_ns}",
+            'timestamp_ns': timestamp_ns,
             'keys': keys,
-        }
-
-        return trace
-
-    def _create_dialog_trace(
-        self,
-        timestamp_us: int,
-        keys: list,
-        input_len: int,
-        output_len: int,
-        total_keys: list,
-        instance_id: str = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        创建DialogTurnSchemaTrace (inference模式)
-
-        Args:
-            timestamp_us: 微秒时间戳
-            keys: prefill阶段的block ID列表
-            input_len: 输入token数
-            output_len: 输出token数
-            total_keys: 完整的key列表 (prefill + decode)
-            instance_id: 实例ID (None则使用default_instance_id)
-            **kwargs: 其他可选字段
-
-        Returns:
-            DialogTurnSchemaTrace字典
-        """
-        # 使用指定的instance_id或默认值
-        if instance_id is None:
-            instance_id = self.default_instance_id
-
-        # 分配无冲突的时间戳
-        timestamp_us = self._allocate_timestamp(instance_id, timestamp_us)
-
-        # tokens字段处理: 根据keep_tokens决定是否保留
-        tokens = kwargs.get('tokens', []) if self.keep_tokens else []
-        
-        trace = {
-            'type': 'dialog',  # 显式标记为DialogTurn trace
-            # OptimizerSchemaTrace 基础字段
-            'instance_id': instance_id,
-            'trace_id': f"trace_{instance_id}_{timestamp_us}",
-            'timestamp_us': timestamp_us,
-            'tokens': tokens,
-            'keys': keys,
-
-            # GetLocationSchemaTrace 字段
-            'query_type': kwargs.get('query_type', 'prefix_match'),
-            'block_mask': kwargs.get('block_mask', []),
-            'sw_size': kwargs.get('sw_size', 0),
-            'location_spec_names': kwargs.get('location_spec_names', []),
-
-            # DialogTurnSchemaTrace 字段
-            'input_len': input_len,
-            'output_len': output_len,
-            'total_keys': total_keys,
         }
 
         return trace

@@ -10,6 +10,62 @@
 
 namespace kv_cache_manager {
 
+// RAII guard that records a begin timestamp on construction and writes
+// (now - begin) into the target Gauge on explicit reset (move-assign) or,
+// when auto_finish is true, on destruction.
+//
+// Two usage modes controlled by auto_finish:
+//   - CHRONO_SCOPE (auto_finish=true):  records on destruction (scope guard)
+//   - MARK_BEGIN/END (auto_finish=false): records only via MARK_END (move-assign);
+//     if MARK_END is never reached (early return), destructor is a no-op.
+//
+// Stores begin_us_ per-instance (stack / member), eliminating the
+// multi-thread race that existed when begin_ lived on a shared collector.
+class ChronoScopeGuard {
+public:
+    ChronoScopeGuard() noexcept = default;
+
+    explicit ChronoScopeGuard(Gauge *g, bool auto_finish = true) noexcept
+        : gauge_(g), begin_us_(g ? TimestampUtil::GetCurrentTimeUs() : 0), auto_finish_(auto_finish) {}
+
+    ChronoScopeGuard(const ChronoScopeGuard &) = delete;
+    ChronoScopeGuard &operator=(const ChronoScopeGuard &) = delete;
+
+    ChronoScopeGuard(ChronoScopeGuard &&o) noexcept
+        : gauge_(o.gauge_), begin_us_(o.begin_us_), auto_finish_(o.auto_finish_) {
+        o.gauge_ = nullptr;
+    }
+
+    ChronoScopeGuard &operator=(ChronoScopeGuard &&o) noexcept {
+        if (this != &o) {
+            Finish();
+            gauge_ = o.gauge_;
+            begin_us_ = o.begin_us_;
+            auto_finish_ = o.auto_finish_;
+            o.gauge_ = nullptr;
+        }
+        return *this;
+    }
+
+    ~ChronoScopeGuard() {
+        if (auto_finish_) {
+            Finish();
+        }
+    }
+
+private:
+    void Finish() noexcept {
+        if (gauge_) {
+            *gauge_ = static_cast<double>(TimestampUtil::GetCurrentTimeUs() - begin_us_);
+            gauge_ = nullptr;
+        }
+    }
+
+    Gauge *gauge_ = nullptr;
+    std::int64_t begin_us_ = 0;
+    bool auto_finish_ = false;
+};
+
 /* ---------------------- Generic Help Macros ----------------------- */
 
 #ifndef KVCM_METRICS_COLLECTOR_
@@ -28,24 +84,18 @@ namespace kv_cache_manager {
     } while (0)
 #endif
 
+#ifndef KVCM_METRICS_COLLECTOR_CHRONO_SCOPE
+#define KVCM_METRICS_COLLECTOR_CHRONO_SCOPE(ptr, method) ((ptr) ? (ptr)->Make##method##Scope() : ChronoScopeGuard{})
+#endif
+
 #ifndef KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN
 #define KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(ptr, method)                                                          \
-    do {                                                                                                               \
-        if (!(ptr)) {                                                                                                  \
-            break;                                                                                                     \
-        }                                                                                                              \
-        (ptr)->Mark##method##Begin();                                                                                  \
-    } while (0)
+    auto kvcm_chrono_scope_##method##_ = ((ptr) ? (ptr)->Make##method##Scope(false) : ChronoScopeGuard{})
 #endif
 
 #ifndef KVCM_METRICS_COLLECTOR_CHRONO_MARK_END
 #define KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(ptr, method)                                                            \
-    do {                                                                                                               \
-        if (!(ptr)) {                                                                                                  \
-            break;                                                                                                     \
-        }                                                                                                              \
-        (ptr)->Mark##method##End();                                                                                    \
-    } while (0)
+    kvcm_chrono_scope_##method##_ = ChronoScopeGuard {}
 #endif
 
 #ifndef KVCM_METRICS_COLLECTOR_SET_METRICS
@@ -187,13 +237,9 @@ private:                                                                        
 #define KVCM_CHRONO_METRICS(group, name, method)                                                                       \
     KVCM_GAUGE_METRICS(group, name)                                                                                    \
 public:                                                                                                                \
-    void Mark##method##Begin() { group##_##name##_begin_ = TimestampUtil::GetCurrentTimeUs(); }                        \
-    void Mark##method##End() {                                                                                         \
-        METRICS_(group, name) = static_cast<double>(TimestampUtil::GetCurrentTimeUs() - group##_##name##_begin_);      \
-    }                                                                                                                  \
-                                                                                                                       \
-private:                                                                                                               \
-    std::int64_t group##_##name##_begin_ = 0;
+    ChronoScopeGuard Make##method##Scope(bool auto_finish = true) {                                                    \
+        return ChronoScopeGuard(&METRICS_(group, name), auto_finish);                                                  \
+    }
 #endif
 
 /* ------------------- ServiceMetricsCollector ---------------------- */
@@ -216,7 +262,10 @@ class ServiceMetricsCollector final : public MetricsCollector {
     // manager metrics
     KVCM_GAUGE_METRICS(manager, request_key_count)
     KVCM_GAUGE_METRICS(manager, prefix_match_len)
+    KVCM_COUNTER_METRICS(manager, get_cache_location_query_block_counter)
+    KVCM_COUNTER_METRICS(manager, get_cache_location_hit_block_counter)
     KVCM_CHRONO_METRICS(manager, prefix_match_time_us, ManagerPrefixMatch)
+    KVCM_CHRONO_METRICS(manager, batch_get_time_us, ManagerBatchGet)
     KVCM_GAUGE_METRICS(manager, lock_write_location_retry_times)
     KVCM_GAUGE_METRICS(manager, write_cache_io_cost_us)
     KVCM_CHRONO_METRICS(manager, filter_write_cache_time_us, ManagerFilterWriteCache)
@@ -228,7 +277,10 @@ class ServiceMetricsCollector final : public MetricsCollector {
 
     // meta searcher metrics
     KVCM_CHRONO_METRICS(meta_searcher, indexer_get_time_us, MetaSearcherIndexerGet)
-    KVCM_CHRONO_METRICS(meta_searcher, indexer_read_modify_write_time_us, MetaSearcherIndexerReadModifyWrite)
+    KVCM_CHRONO_METRICS(meta_searcher, indexer_read_modify_write_block_time_us, MetaSearcherIndexerReadModifyWriteBlock)
+    KVCM_CHRONO_METRICS(meta_searcher,
+                        indexer_read_modify_write_location_time_us,
+                        MetaSearcherIndexerReadModifyWriteLocation)
     KVCM_GAUGE_METRICS(meta_searcher, index_serialize_time_us)
     KVCM_GAUGE_METRICS(meta_searcher, index_deserialize_time_us)
     KVCM_GAUGE_METRICS(meta_searcher, indexer_query_times)
@@ -242,15 +294,21 @@ class ServiceMetricsCollector final : public MetricsCollector {
     KVCM_GAUGE_METRICS(meta_indexer, search_cache_hit_ratio)
     KVCM_GAUGE_METRICS(meta_indexer, io_data_size)
     KVCM_GAUGE_METRICS(meta_indexer, put_io_time_us)
-    KVCM_GAUGE_METRICS(meta_indexer, update_io_time_us)
     KVCM_GAUGE_METRICS(meta_indexer, upsert_io_time_us)
+    KVCM_GAUGE_METRICS(meta_indexer, lock_wait_time_us)
     KVCM_GAUGE_METRICS(meta_indexer, delete_io_time_us)
     KVCM_GAUGE_METRICS(meta_indexer, get_io_time_us)
     KVCM_GAUGE_METRICS(meta_indexer, rand_io_time_us)
+    KVCM_GAUGE_METRICS(meta_indexer, rmw_get_io_time_us)
     KVCM_GAUGE_METRICS(meta_indexer, read_modify_write_put_key_count)
     KVCM_GAUGE_METRICS(meta_indexer, read_modify_write_update_key_count)
     KVCM_GAUGE_METRICS(meta_indexer, read_modify_write_skip_key_count)
     KVCM_GAUGE_METRICS(meta_indexer, read_modify_write_delete_key_count)
+    KVCM_GAUGE_METRICS(meta_indexer, async_enqueue_timeout_key_count)
+    KVCM_GAUGE_METRICS(meta_indexer, async_enqueue_time_us)
+    KVCM_GAUGE_METRICS(meta_indexer, cache_backend_put_time_us)
+    KVCM_GAUGE_METRICS(meta_indexer, cache_backend_upsert_time_us)
+    KVCM_GAUGE_METRICS(meta_indexer, cache_backend_delete_time_us)
 
 public:
     ServiceMetricsCollector() = delete;
@@ -363,6 +421,12 @@ public:
 class CacheManagerInstanceMetricsCollector final : public MetricsCollector {
     KVCM_GAUGE_METRICS(cache_manager_instance, key_count)
     KVCM_GAUGE_METRICS(cache_manager_instance, byte_size)
+    KVCM_GAUGE_METRICS(cache_manager_instance, max_lru_age_us)
+    KVCM_GAUGE_METRICS(cache_manager_instance, async_queue_max_size)
+    KVCM_GAUGE_METRICS(cache_manager_instance, async_queue_avg_size)
+    KVCM_GAUGE_METRICS(cache_manager_instance, async_flush_key_count)
+    KVCM_GAUGE_METRICS(cache_manager_instance, async_batch_flush_time_us)
+    KVCM_GAUGE_METRICS(cache_manager_instance, async_pipeline_error_count)
 
 public:
     CacheManagerInstanceMetricsCollector() = delete;

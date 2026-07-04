@@ -6,7 +6,7 @@
 #include <pybind11/stl_bind.h>
 
 #include "kv_cache_manager/common/logger.h"
-#include "kv_cache_manager/manager/cache_location.h"
+#include "kv_cache_manager/meta/cache_location.h"
 #include "kv_cache_manager/optimizer/config/insight_simulator_types.h"
 #include "kv_cache_manager/optimizer/config/instance_config.h"
 #include "kv_cache_manager/optimizer/config/instance_group_config.h"
@@ -25,7 +25,7 @@ struct OSException {
 } // namespace
 
 PYBIND11_MODULE(kvcm_py_optimizer, module) {
-    pybind11::register_exception_translator([](std::exception_ptr p) {
+    pybind11::register_local_exception_translator([](std::exception_ptr p) {
         try {
             if (p)
                 std::rethrow_exception(p);
@@ -43,6 +43,7 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
         .value("LRU", kvcm::EvictionPolicyType::POLICY_LRU)
         .value("RANDOM_LRU", kvcm::EvictionPolicyType::POLICY_RANDOM_LRU)
         .value("LEAF_AWARE_LRU", kvcm::EvictionPolicyType::POLICY_LEAF_AWARE_LRU)
+        .value("TTL", kvcm::EvictionPolicyType::POLICY_TTL)
         .finalize();
 
     py::native_enum<kvcm::DataStorageType>(module, "DataStorageType", "enum.Enum")
@@ -111,11 +112,12 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
 
     // 绑定OptimizerManager类
     py::class_<kvcm::OptimizerManager>(module, "OptimizerManager")
-        .def(py::init<const kvcm::OptimizerConfig &, bool>(),
+        .def(py::init<const kvcm::OptimizerConfig &, bool, bool>(),
              py::arg("config"),
              py::arg("enable_lifecycle_tracking") = false,
+             py::arg("enable_template_analysis") = false,
              "Initialize OptimizerManager. Set enable_lifecycle_tracking=True to track block lifecycle (uses ~10GB "
-             "more memory)")
+             "more memory). Set enable_template_analysis=True to enable template prefix analysis (slower replay)")
         .def("Init", &kvcm::OptimizerManager::Init, py::call_guard<py::gil_scoped_release>())
         .def("DirectRun", &kvcm::OptimizerManager::DirectRun, py::call_guard<py::gil_scoped_release>())
         .def("AnalyzeResults",
@@ -130,7 +132,7 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
              py::arg("trace_id"),
              py::arg("timestamp"),
              py::arg("block_ids"),
-             py::arg("token_ids"))
+             py::arg("ttl_seconds") = int64_t(0))
         .def(
             "GetCacheLocation",
             [](kvcm::OptimizerManager &self,
@@ -138,8 +140,8 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
                const std::string &trace_id,
                const int64_t timestamp,
                const std::vector<int64_t> &block_ids,
-               const std::vector<int64_t> &token_ids,
-               const py::object &block_mask_obj) {
+               const py::object &block_mask_obj,
+               const int64_t input_len) {
                 kvcm::BlockMask block_mask;
                 if (py::isinstance<std::vector<bool>>(block_mask_obj)) {
                     block_mask = block_mask_obj.cast<std::vector<bool>>();
@@ -148,15 +150,15 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
                 } else {
                     throw std::invalid_argument("block_mask must be either a list of bools or an integer bitmask.");
                 }
-                return self.GetCacheLocation(instance_id, trace_id, timestamp, block_ids, token_ids, block_mask);
+                return self.GetCacheLocation(instance_id, trace_id, timestamp, block_ids, block_mask, input_len);
             },
             py::call_guard<py::gil_scoped_release>(),
             py::arg("instance_id"),
             py::arg("trace_id"),
             py::arg("timestamp"),
             py::arg("block_ids"),
-            py::arg("token_ids"),
-            py::arg("block_mask"))
+            py::arg("block_mask"),
+            py::arg("input_len"))
         .def("ClearCache",
              &kvcm::OptimizerManager::ClearCache,
              py::call_guard<py::gil_scoped_release>(),

@@ -1,13 +1,17 @@
 #include "kv_cache_manager/manager/cache_manager_metrics_recorder.h"
 
+#include <climits>
+
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/common/request_context.h"
+#include "kv_cache_manager/common/timestamp_util.h"
 #include "kv_cache_manager/config/instance_group.h"
 #include "kv_cache_manager/config/instance_info.h"
 #include "kv_cache_manager/config/registry_manager.h"
 #include "kv_cache_manager/manager/write_location_manager.h"
 #include "kv_cache_manager/meta/meta_indexer.h"
 #include "kv_cache_manager/meta/meta_indexer_manager.h"
+#include "kv_cache_manager/metrics/metrics_lifecycle.h"
 
 namespace kv_cache_manager {
 
@@ -37,10 +41,12 @@ private:
 
 CacheManagerMetricsRecorder::CacheManagerMetricsRecorder(std::shared_ptr<MetaIndexerManager> meta_indexer_manager,
                                                          std::shared_ptr<WriteLocationManager> write_location_manager,
-                                                         std::shared_ptr<RegistryManager> registry_manager)
+                                                         std::shared_ptr<RegistryManager> registry_manager,
+                                                         std::shared_ptr<MetricsLifecycle> metrics_lifecycle)
     : meta_indexer_manager_(meta_indexer_manager)
     , write_location_manager_(write_location_manager)
-    , registry_manager_(registry_manager) {}
+    , registry_manager_(registry_manager)
+    , metrics_lifecycle_(std::move(metrics_lifecycle)) {}
 
 CacheManagerMetricsRecorder::~CacheManagerMetricsRecorder() { Stop(); }
 
@@ -63,10 +69,33 @@ void CacheManagerMetricsRecorder::DoCleanup() {
     return;
 }
 
+void CacheManagerMetricsRecorder::RemoveInstance(const std::string &instance_id) {
+    std::scoped_lock guard(mutex_);
+    for (auto &[group_name, instance_map] : group_instance_id_metric_map_) {
+        instance_map.erase(instance_id);
+    }
+}
+
+void CacheManagerMetricsRecorder::RemoveGroup(const std::string &group_name) {
+    std::scoped_lock guard(mutex_);
+    group_usage_ratio_map_.erase(group_name);
+    group_instance_id_metric_map_.erase(group_name);
+}
+
 void CacheManagerMetricsRecorder::RecorderLoop() {
     KVCM_LOG_INFO("RecorderLoop started");
     while (!stop_.load(std::memory_order_relaxed)) {
         SleepHelper sleep_helper(stop_mutex_, stop_cv_, stop_);
+
+        // hold a shared lifecycle lock around the entire registry-read
+        // → publish span so an instance/group removal cannot interleave
+        // between sampling the registry and publishing the snapshot
+        // without this, a recorder iteration that read the registry
+        // pre-removal could publish a stale snapshot post-removal that
+        // the reporter would then materialise into the metrics
+        // registry, leaking metrics permanently
+        std::shared_lock<std::shared_mutex> lifecycle_guard(metrics_lifecycle_->mut_);
+
         const auto request_context = std::make_shared<RequestContext>(kTraceId);
         const auto [ec, instance_groups] = registry_manager_->ListInstanceGroup(request_context.get());
         if (ec != ErrorCode::EC_OK) {
@@ -97,22 +126,23 @@ void CacheManagerMetricsRecorder::RecorderLoop() {
                 }
                 meta_indexer->PersistMetaData();
                 const std::size_t key_cnt = meta_indexer->GetKeyCount();
-                std::size_t byte_size = 0;
-                if (meta_indexer->GetVersion() == MetaIndexer::InstanceVersion::VERSION_0) {
-                    std::size_t byte_size_per_key = 0;
-                    for (auto &location_spec_info : instance_info->location_spec_infos()) {
-                        byte_size_per_key += location_spec_info.size();
-                    }
-                    byte_size = byte_size_per_key * key_cnt;
-                } else if (meta_indexer->GetVersion() == MetaIndexer::InstanceVersion::VERSION_1) {
-                    byte_size = meta_indexer->GetStorageUsage();
-                } else {
-                    KVCM_LOG_WARN("unknown meta_indexer version: [%" PRIu8 "]",
-                                  static_cast<std::uint8_t>(meta_indexer->GetVersion()));
-                    continue;
-                }
+                const std::size_t byte_size = meta_indexer->GetStorageUsage();
                 group_byte_size += byte_size;
-                group_instance_id_metric_map[instance_group_name][instance_id] = InstanceMetric({key_cnt, byte_size});
+                const int64_t oldest_access_time = meta_indexer->GetOldestAccessTime();
+                int64_t max_lru_age_us = 0;
+                if (oldest_access_time < INT64_MAX) {
+                    max_lru_age_us = TimestampUtil::GetCurrentTimeUs() - oldest_access_time;
+                }
+                auto write_stats = meta_indexer->GetAsyncWriteStats();
+                group_instance_id_metric_map[instance_group_name][instance_id] = InstanceMetric{
+                    key_cnt,
+                    byte_size,
+                    write_stats.max_async_queue_size,
+                    write_stats.avg_async_queue_size,
+                    write_stats.flush_key_count,
+                    write_stats.batch_flush_time_us,
+                    write_stats.pipeline_error_count,
+                    max_lru_age_us};
             }
             int64_t capacity = instance_group->quota().capacity();
             group_usage_ratio_map[instance_group_name] =

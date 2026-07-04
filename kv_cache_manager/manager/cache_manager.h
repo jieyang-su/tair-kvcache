@@ -1,7 +1,10 @@
 #pragma once
 
+#include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "kv_cache_manager/common/error_code.h"
@@ -26,6 +29,7 @@ class ReclaimerTaskSupervisor;
 class StartupConfigLoader;
 class EventManager;
 class CacheManagerMetricsRecorder;
+struct MetricsLifecycle;
 constexpr unsigned int DEFAULT_SCHEDULE_PLAN_EXECUTOR_THREAD_COUNT = 2;
 
 class CacheManager {
@@ -56,7 +60,9 @@ public:
     using UriType = std::string;
     using UriVector = std::vector<UriType>;
 
-    CacheManager(std::shared_ptr<MetricsRegistry> metrics_registry, std::shared_ptr<RegistryManager> registry_manager);
+    CacheManager(std::shared_ptr<MetricsRegistry> metrics_registry,
+                 std::shared_ptr<RegistryManager> registry_manager,
+                 std::shared_ptr<MetricsLifecycle> metrics_lifecycle = nullptr);
     ~CacheManager();
 
     bool Init(int32_t schedule_plan_executor_thread_count = DEFAULT_SCHEDULE_PLAN_EXECUTOR_THREAD_COUNT,
@@ -66,8 +72,21 @@ public:
               uint32_t cache_reclaimer_idle_interval_ms = 100,
               uint32_t cache_reclaimer_worker_size = 16);
     ErrorCode DoRecover();
+    ErrorCode DoRecoverOnce();
+    void StartRecoverRetryLoop();
+    void StopRecoverRetryLoop();
     ErrorCode DoCleanup();
     std::shared_ptr<RegistryManager> GetRegistryManager() { return registry_manager_; }
+    [[nodiscard]] std::shared_ptr<MetricsLifecycle> metrics_lifecycle() const { return metrics_lifecycle_; }
+
+    // register a callback invoked after an instance is fully removed;
+    // must be set before serving traffic (not thread-safe for writes)
+    // the callback runs on the RemoveInstance call stack — callees
+    // must not re-enter CacheManager methods
+    using OnInstanceRemovedFn = std::function<void(const std::string &instance_id)>;
+    void SetOnInstanceRemoved(OnInstanceRemovedFn fn) { on_instance_removed_ = std::move(fn); }
+
+    std::string GetExtraInfo(RequestContext *request_context, const std::string &instance_id);
 
     std::pair<ErrorCode, std::string> RegisterInstance(RequestContext *request_context,
                                                        const std::string &instance_group,
@@ -100,6 +119,17 @@ public:
                      int32_t sw_size,
                      const std::vector<std::string> &location_spec_names);
 
+    std::pair<ErrorCode, BatchLocationsView>
+    GetCacheLocationsByBackend(RequestContext *request_context,
+                               const std::string &instance_id,
+                               QueryType query_type,
+                               const KeyVector &keys,
+                               const TokenIdsVector &tokens,
+                               const BlockMask &block_mask,
+                               int32_t sw_size,
+                               const std::vector<std::string> &location_spec_names,
+                               const std::vector<BackendSelector> &backend_selectors = {});
+
     std::pair<ErrorCode, int64_t> GetCacheLocationLen(RequestContext *request_context,
                                                       const std::string &instance_id,
                                                       QueryType query_type,
@@ -112,7 +142,8 @@ public:
                                                               const KeyVector &keys,
                                                               const TokenIdsVector &tokens,
                                                               const std::vector<std::string> &location_spec_group_names,
-                                                              int64_t write_timeout_seconds);
+                                                              int64_t write_timeout_seconds,
+                                                              int32_t min_replica_count = 1);
     ErrorCode
     FinishWriteCache(RequestContext *request_context,
                      const std::string &instance_id,
@@ -125,6 +156,10 @@ public:
                           const KeyVector &keys,
                           const TokenIdsVector &tokens,
                           const BlockMask &block_mask /*TODO*/);
+
+    ErrorCode ReportEvent(RequestContext *request_context,
+                          const proto::meta::ReportEventRequest *request,
+                          proto::meta::ReportEventResponse *response);
     ErrorCode TrimCache(RequestContext *request_context,
                         const std::string &instance_id,
                         const proto::meta::TrimStrategy &trim_strategy,
@@ -148,7 +183,17 @@ private:
                                KeyVector &new_keys,
                                const std::vector<std::string> &location_spec_group_names,
                                std::vector<std::string_view> &new_location_spec_group_names,
-                               BlockMask &block_mask);
+                               BlockMask &block_mask,
+                               int32_t min_replica_count);
+    ErrorCode FilterWriteCacheWithMinReplica(RequestContext *request_context,
+                                             const std::string &instance_id,
+                                             MetaSearcher *meta_searcher,
+                                             const KeyVector &keys,
+                                             KeyVector &new_keys,
+                                             const std::vector<std::string> &location_spec_group_names,
+                                             std::vector<std::string_view> &new_location_spec_group_names,
+                                             BlockMask &block_mask,
+                                             int32_t min_replica_count);
     ErrorCode GenWriteLocation(RequestContext *request_context,
                                const std::string &instance_id,
                                const CacheManager::KeyVector &keys,
@@ -183,7 +228,18 @@ private:
                                                                       const TokenIdsVector &tokens) const;
     std::pair<ErrorCode, int64_t> GetBlockSize(RequestContext *request_context, const std::string &instance_id) const;
     void FilterLocationSpecByName(CacheLocationVector &locations, const std::vector<std::string> &location_spec_names);
+    ErrorCode CheckLocationSpecGroupNames(RequestContext *request_context,
+                                          const std::string &instance_id,
+                                          size_t key_count,
+                                          const std::vector<std::string> &location_spec_group_names);
+    static void FillEmptyLocationSpecs(const std::vector<LocationSpecInfo> &location_spec_infos,
+                                       CacheLocationVector &locations);
     std::string GetStorageConfigStr(RequestContext *request_context, const std::string &instance_id) const;
+
+    void CleanupHostLocations(const std::string &instance_id,
+                              const std::string &host_ip_port,
+                              uint64_t cleanup_generation,
+                              DataStorageType storage_type);
     ErrorCode GetCacheLocationByQueryType(MetaSearcher *meta_searcher,
                                           RequestContext *request_context,
                                           const std::string &instance_id,
@@ -205,8 +261,13 @@ private:
                                         CacheLocationVector &cache_locations) const;
     std::unique_ptr<SelectLocationPolicy> genSelectLocationPolicy(RequestContext *request_context,
                                                                   const std::string &instance_id) const;
-    CheckLocDataExistFunc GetCheckLocDataExistFunc() const;
+    CheckLocDataExistFunc GetCheckLocDataExistFunc(const std::string &instance_id) const;
     SubmitDelReqFunc GetSubmitDelReqFunc(const std::string &instance_id) const;
+    void ClearEventCleanupCallbacks();
+
+    // purge metrics registry entries and invoke the removal callback
+    // for a given instance_id
+    void InvalidateInstanceMetrics(const std::string &instance_id) const;
 
 private:
     /***
@@ -237,8 +298,15 @@ private:
     std::unique_ptr<ReclaimerTaskSupervisor> reclaimer_task_supervisor_;
     // 无需清理 - 不包含运行时状态
     std::shared_ptr<EventManager> event_manager_;
+    // 无需清理
+    std::shared_ptr<MetricsLifecycle> metrics_lifecycle_;
     // 需要清理 - 避免有metrics遗留
     std::shared_ptr<CacheManagerMetricsRecorder> metrics_recorder_;
+    // 无需清理
+    OnInstanceRemovedFn on_instance_removed_;
+    // 需要清理 - recover 重试线程相关，在DoCleanup()中StopRecoverRetryLoop()
+    std::thread recover_retry_thread_;
+    std::atomic<bool> recover_retry_stop_{false};
 };
 
 } // namespace kv_cache_manager

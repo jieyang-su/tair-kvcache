@@ -51,6 +51,7 @@ private:
     // slot 3: DATA_STORAGE_TYPE_TAIR_MEMPOOL availability flag
     // slot 4: DATA_STORAGE_TYPE_NFS exceed availability flag
     // slot 5: DATA_STORAGE_TYPE_VCNS_HF3FS **UNUSED** (merged into HF3FS)
+    // slot 6: DATA_STORAGE_TYPE_DUMMY availability flag (testing only)
     array_t_ storage_quota_avail_by_type_;
 };
 
@@ -60,6 +61,7 @@ DataStorageSelector::StorageQuotaAvail::StorageQuotaAvail() : storage_quota_avai
     storage_quota_avail_by_type_.at(ToIndex(DataStorageType::DATA_STORAGE_TYPE_MOONCAKE)) = true;
     storage_quota_avail_by_type_.at(ToIndex(DataStorageType::DATA_STORAGE_TYPE_TAIR_MEMPOOL)) = true;
     storage_quota_avail_by_type_.at(ToIndex(DataStorageType::DATA_STORAGE_TYPE_NFS)) = true;
+    storage_quota_avail_by_type_.at(ToIndex(DataStorageType::DATA_STORAGE_TYPE_DUMMY)) = true;
 }
 
 bool DataStorageSelector::StorageQuotaAvail::GetStorageQuotaAvailByType(const DataStorageType &type) const noexcept {
@@ -366,24 +368,7 @@ std::size_t DataStorageSelector::CalcGroupUsedSize(
         }
 
         meta_indexer->PersistMetaData();
-        if (meta_indexer->GetVersion() == MetaIndexer::InstanceVersion::VERSION_0) {
-            const std::size_t ins_used_key_cnt = meta_indexer->GetKeyCount();
-
-            std::size_t byte_size_per_key = 0;
-            for (auto &location_spec_info : instance_info->location_spec_infos()) {
-                byte_size_per_key += location_spec_info.size();
-            }
-            const std::size_t ins_used_byte_size = byte_size_per_key * ins_used_key_cnt;
-
-            group_used_byte_size += ins_used_byte_size;
-        } else if (meta_indexer->GetVersion() == MetaIndexer::InstanceVersion::VERSION_1) {
-            group_used_byte_size += meta_indexer->GetStorageUsage();
-        } else {
-            PREFIX_LOG(WARN,
-                       "unknown meta_indexer version: [%" PRIu8 "]",
-                       static_cast<std::uint8_t>(meta_indexer->GetVersion()));
-            continue; // in case of more logic added below this
-        }
+        group_used_byte_size += meta_indexer->GetStorageUsage();
     }
 
     return group_used_byte_size;

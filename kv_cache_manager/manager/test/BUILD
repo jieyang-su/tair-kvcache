@@ -52,7 +52,7 @@ cc_test(
     data = [],
     deps = [
         "//kv_cache_manager/common:unittest",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/manager:meta_searcher",
         "//kv_cache_manager/meta",
     ],
@@ -119,7 +119,7 @@ cc_test(
     ],
     deps = [
         "//kv_cache_manager/common:unittest",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/manager:meta_searcher",
         "//kv_cache_manager/meta",
     ],
@@ -143,6 +143,21 @@ cc_test(
     name = "SelectLocationPolicyTest",
     srcs = [
         "selection_location_policy_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    data = [],
+    deps = [
+        "//kv_cache_manager/common:string_util",
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/data_storage:common_define",
+        "//kv_cache_manager/manager:select_location_policy",
+    ],
+)
+
+cc_test(
+    name = "FilterWriteCacheTest",
+    srcs = [
+        "filter_write_cache_test.cc",
     ],
     copts = ["-fno-access-control"],
     data = [],
@@ -179,5 +194,20 @@ cc_test(
     deps = [
         "//kv_cache_manager/common:unittest",
         "//kv_cache_manager/manager:write_location_manager",
+    ],
+)
+
+cc_test(
+    name = "CacheManagerMetricsRecorderTest",
+    srcs = [
+        "cache_manager_metrics_recorder_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    data = [],
+    linkstatic = True,
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/manager:cache_manager_metrics_recorder",
+        "//kv_cache_manager/metrics:metrics_lifecycle",
     ],
 )

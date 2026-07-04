@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <shared_mutex>
 #include <utility>
 
 #include "kv_cache_manager/common/common_util.h"
@@ -14,6 +15,7 @@
 #include "kv_cache_manager/meta/meta_indexer.h"
 #include "kv_cache_manager/meta/meta_indexer_manager.h"
 #include "kv_cache_manager/metrics/metrics_collector.h"
+#include "kv_cache_manager/metrics/metrics_lifecycle.h"
 #include "kv_cache_manager/metrics/metrics_registry.h"
 
 namespace kv_cache_manager {
@@ -91,6 +93,12 @@ void LocalMetricsReporter::ReportInterval() {
         return;
     }
 
+    // hold a shared lifecycle lock across the entire metrics publication
+    // so concurrent RemoveInstance/RemoveInstanceGroup/RemoveStorage
+    // (which hold the lock as a writer) cannot interleave a tag-filter
+    // purge with EmplaceMetricsCollector calls below
+    std::shared_lock<std::shared_mutex> lifecycle_guard(cache_manager_->metrics_lifecycle()->mut_);
+
     do {
         // for data storage metrics
         const auto registry_manager = cache_manager_->GetRegistryManager();
@@ -137,7 +145,7 @@ void LocalMetricsReporter::ReportInterval() {
         for (auto &[_, indexer] : indexer_map) {
             if (indexer) {
                 total_key_count_v += indexer->GetKeyCount();
-                total_cache_usage_v += indexer->GetCacheUsage();
+                total_cache_usage_v += indexer->GetMemUsage();
             }
         }
 
@@ -183,6 +191,12 @@ void LocalMetricsReporter::ReportInterval() {
                                 MetricsTags{{"instance_group", instance_group_name}, {"instance_id", instance_id}});
                     SET_METRICS_(p, cache_manager_instance, key_count, static_cast<double>(instance_metric.key_count));
                     SET_METRICS_(p, cache_manager_instance, byte_size, static_cast<double>(instance_metric.byte_size));
+                    SET_METRICS_(p, cache_manager_instance, max_lru_age_us, static_cast<double>(instance_metric.max_lru_age_us));
+                    SET_METRICS_(p, cache_manager_instance, async_queue_max_size, static_cast<double>(instance_metric.async_queue_max_size));
+                    SET_METRICS_(p, cache_manager_instance, async_queue_avg_size, static_cast<double>(instance_metric.async_queue_avg_size));
+                    SET_METRICS_(p, cache_manager_instance, async_flush_key_count, static_cast<double>(instance_metric.async_flush_key_count));
+                    SET_METRICS_(p, cache_manager_instance, async_batch_flush_time_us, static_cast<double>(instance_metric.async_batch_flush_time_us));
+                    SET_METRICS_(p, cache_manager_instance, async_pipeline_error_count, static_cast<double>(instance_metric.async_pipeline_error_count));
                 }
             }
         }

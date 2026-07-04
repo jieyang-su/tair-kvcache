@@ -30,11 +30,11 @@
 #include "kv_cache_manager/data_storage/data_storage_manager.h"
 #include "kv_cache_manager/data_storage/storage_config.h"
 #include "kv_cache_manager/event/event_manager.h"
-#include "kv_cache_manager/manager/cache_location.h"
 #include "kv_cache_manager/manager/cache_reclaimer.h"
 #include "kv_cache_manager/manager/meta_searcher.h"
 #include "kv_cache_manager/manager/meta_searcher_manager.h"
 #include "kv_cache_manager/manager/schedule_plan_executor.h"
+#include "kv_cache_manager/meta/cache_location.h"
 #include "kv_cache_manager/meta/common.h"
 #include "kv_cache_manager/meta/meta_indexer.h"
 #include "kv_cache_manager/meta/meta_indexer_manager.h"
@@ -172,6 +172,7 @@ RegistryManager_ListInstanceInfo_stub(void *obj, RequestContext *rc, const std::
 std::chrono::milliseconds spe_submit_delay{0};
 PlanExecuteResult del_result;
 std::vector<CacheLocationDelRequest> submitted_del_requests;
+std::mutex submitted_del_requests_mutex;
 // spe_submit_loc is used to help casting the func addr in the stub def below
 // the using declarations is the same as
 // typedef std::future<PlanExecuteResult> (SchedulePlanExecutor::*spe_submit_loc)(const CacheLocationDelRequest &);
@@ -179,7 +180,10 @@ using spe_submit_loc = std::future<PlanExecuteResult> (SchedulePlanExecutor::*)(
 
 std::future<PlanExecuteResult> SchedulePlanExecutor_Submit_stub(void *obj, const CacheLocationDelRequest &request) {
     const auto promise = std::make_shared<std::promise<PlanExecuteResult>>();
-    submitted_del_requests.emplace_back(request);
+    {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        submitted_del_requests.emplace_back(request);
+    }
     std::this_thread::sleep_for(spe_submit_delay);
     promise->set_value(del_result);
     return promise->get_future();
@@ -198,34 +202,32 @@ std::shared_ptr<MetaIndexer> MetaIndexerManager_GetMetaIndexer_stub(void *obj, c
 
 std::chrono::milliseconds mi_getprop_delay{0};
 ErrorCode get_result;
-MetaIndexer::PropertyMapVector get_out_properties;
+PropertyMapVector get_out_properties;
 
 MetaIndexer::Result MetaIndexer_GetProperties_stub(void *obj,
                                                    RequestContext *rc,
-                                                   const MetaIndexer::KeyVector &k,
+                                                   const KeyVector &k,
                                                    const std::vector<std::string> &p,
-                                                   MetaIndexer::PropertyMapVector &out_properties) noexcept {
+                                                   PropertyMapVector &out_properties) noexcept {
     if (get_result == ErrorCode::EC_OK) {
         if (k.size() == get_out_properties.size()) {
             out_properties = get_out_properties;
         } else {
-            out_properties = MetaIndexer::PropertyMapVector(k.size());
+            out_properties = PropertyMapVector(k.size());
         }
     }
     std::this_thread::sleep_for(mi_getprop_delay);
-    return {get_result};
+    return MetaIndexer::Result(get_result);
 }
 
 /* ---------------- MetaIndexer_RandomSample_stub ---------------- */
 
 std::chrono::milliseconds mi_randsample_delay{0};
 ErrorCode random_sample_result;
-MetaIndexer::KeyVector random_sample_keys;
+KeyVector random_sample_keys;
 
-ErrorCode MetaIndexer_RandomSample_stub(void *obj,
-                                        RequestContext *rc,
-                                        const std::size_t c,
-                                        MetaIndexer::KeyVector &out_keys) noexcept {
+ErrorCode
+MetaIndexer_RandomSample_stub(void *obj, RequestContext *rc, const std::size_t c, KeyVector &out_keys) noexcept {
     if (random_sample_result == ErrorCode::EC_OK) {
         if (c == random_sample_keys.size()) {
             out_keys = random_sample_keys;
@@ -233,7 +235,7 @@ ErrorCode MetaIndexer_RandomSample_stub(void *obj,
             // special case
             out_keys = random_sample_keys;
         } else {
-            out_keys = MetaIndexer::KeyVector(c);
+            out_keys = KeyVector(c);
         }
     }
     std::this_thread::sleep_for(mi_randsample_delay);
@@ -244,12 +246,10 @@ ErrorCode MetaIndexer_RandomSample_stub(void *obj,
 
 std::chrono::milliseconds mi_sample_reclaim_delay{0};
 ErrorCode sample_reclaim_result;
-MetaIndexer::KeyVector sample_reclaim_keys;
+KeyVector sample_reclaim_keys;
 
-ErrorCode MetaIndexer_SampleReclaimKeys_stub(void *obj,
-                                             RequestContext *rc,
-                                             const std::int64_t c,
-                                             MetaIndexer::KeyVector &out_keys) noexcept {
+ErrorCode
+MetaIndexer_SampleReclaimKeys_stub(void *obj, RequestContext *rc, const std::int64_t c, KeyVector &out_keys) noexcept {
     if (sample_reclaim_result == ErrorCode::EC_OK) {
         if (c == static_cast<std::int64_t>(sample_reclaim_keys.size())) {
             out_keys = sample_reclaim_keys;
@@ -257,7 +257,7 @@ ErrorCode MetaIndexer_SampleReclaimKeys_stub(void *obj,
             // special case
             out_keys = sample_reclaim_keys;
         } else {
-            out_keys = MetaIndexer::KeyVector(c);
+            out_keys = KeyVector(c);
         }
     }
     std::this_thread::sleep_for(mi_sample_reclaim_delay);
@@ -397,7 +397,10 @@ public:
         dummy_meta_indexer.reset();
         dummy_meta_searcher.reset();
 
-        submitted_del_requests.clear();
+        {
+            std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+            submitted_del_requests.clear();
+        }
 
         get_out_properties.clear();
         random_sample_keys.clear();
@@ -416,6 +419,52 @@ public:
         stub_.reset(ADDR(MetaIndexer, PersistMetaData));
         stub_.reset(ADDR(MetaSearcherManager, GetMetaSearcher));
         stub_.reset(ADDR(MetaSearcher, BatchGetLocation));
+    }
+
+    template <typename Predicate>
+    bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (predicate()) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return predicate();
+    }
+
+    std::vector<CacheLocationDelRequest> SubmittedDelRequestsSnapshot() {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        return submitted_del_requests;
+    }
+
+    void ClearSubmittedDelRequests() {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        submitted_del_requests.clear();
+    }
+
+    bool HasSubmittedDelRequests() {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        return !submitted_del_requests.empty();
+    }
+
+    bool HasNoSubmittedDelRequests() {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        return submitted_del_requests.empty();
+    }
+
+    std::size_t SubmittedDelRequestCount() {
+        std::lock_guard<std::mutex> lock(submitted_del_requests_mutex);
+        return submitted_del_requests.size();
+    }
+
+    bool WaitUntilSubmittedDelRequests(std::chrono::milliseconds timeout = std::chrono::milliseconds(1000)) {
+        return WaitUntil([this] { return HasSubmittedDelRequests(); }, timeout);
+    }
+
+    int ListInstanceGroupCallCount() {
+        std::lock_guard<std::mutex> lock(list_ins_group_mut);
+        return list_ins_group_call_counter;
     }
 
     Stub stub_;
@@ -636,7 +685,7 @@ TEST_F(CacheReclaimerTest, TestPauseResume) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
         ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
         ASSERT_TRUE(cache_reclaimer_->IsPaused());  // the worker thread is in paused state
-        ASSERT_TRUE(submitted_del_requests.empty());
+        ASSERT_TRUE(HasNoSubmittedDelRequests());
     }
 
     {
@@ -644,9 +693,10 @@ TEST_F(CacheReclaimerTest, TestPauseResume) {
         ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
         ASSERT_FALSE(cache_reclaimer_->IsPaused()); // the worker thread is not in paused state
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-        ASSERT_FALSE(submitted_del_requests.empty());
-        const auto &req = submitted_del_requests.back();
+        ASSERT_TRUE(WaitUntilSubmittedDelRequests());
+        const auto requests = SubmittedDelRequestsSnapshot();
+        ASSERT_FALSE(requests.empty());
+        const auto &req = requests.back();
         ASSERT_EQ(2, req.block_keys.size());
         ASSERT_TRUE(VecContains(req.block_keys, 0));
         ASSERT_TRUE(VecContains(req.block_keys, 1));
@@ -1567,13 +1617,14 @@ TEST_F(CacheReclaimerTest, TestInsufficientSampledKeys) {
     // main thread sleeps for 10ms to ensure the worker thread do
     // reclaiming at least once (not 100% but should have reasonable
     // high probability)
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests());
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
     cache_reclaimer_->Stop();
     // all blocks should be submitted when sampled keys are insufficient
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(10, req.block_keys.size());
     for (std::int64_t i = 0; i != 10; ++i) {
         ASSERT_TRUE(VecContains(req.block_keys, i));
@@ -1637,13 +1688,14 @@ TEST_F(CacheReclaimerTest, TestReclaimByLRU00) {
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests());
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
     cache_reclaimer_->Stop();
 
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(2, req.block_keys.size());
     ASSERT_TRUE(VecContains(req.block_keys, 0));
     ASSERT_TRUE(VecContains(req.block_keys, 1));
@@ -1705,13 +1757,14 @@ TEST_F(CacheReclaimerTest, TestReclaimByLRU01) {
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests());
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
     cache_reclaimer_->Stop();
 
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(3, req.block_keys.size());
     // the 3 keys with minimal time point should be included
     ASSERT_TRUE(VecContains(req.block_keys, 1)); // time point -> 2
@@ -1775,13 +1828,14 @@ TEST_F(CacheReclaimerTest, TestReclaimByLRU02) {
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests());
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
     cache_reclaimer_->Stop();
 
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(3, req.block_keys.size());
     // the 3 keys with minimal time point should be included
     ASSERT_TRUE(VecContains(req.block_keys, 9)); // time point -> 2
@@ -1849,7 +1903,7 @@ TEST_F(CacheReclaimerTest, TestReclaimByLRU03) {
 
     cache_reclaimer_->Stop();
 
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestReclaimByLRU04) {
@@ -1908,13 +1962,14 @@ TEST_F(CacheReclaimerTest, TestReclaimByLRU04) {
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests());
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
     cache_reclaimer_->Stop();
 
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(1, req.block_keys.size());
     // the 1 keys with minimal time point should be included
     ASSERT_TRUE(VecContains(req.block_keys, 9)); // time point -> 2
@@ -1949,7 +2004,7 @@ TEST_F(CacheReclaimerTest, TestMetaIndexerGetPropertiesFailure) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted when GetProperties fails
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestMetaIndexerSampleReclaimFailure) {
@@ -1978,7 +2033,7 @@ TEST_F(CacheReclaimerTest, TestMetaIndexerSampleReclaimFailure) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted when SampleReclaim fails
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestMetaIndexerSampleKeys00) {
@@ -2012,7 +2067,7 @@ TEST_F(CacheReclaimerTest, TestMetaIndexerSampleKeys00) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestMetaIndexerSampleKeys01) {
@@ -2073,7 +2128,7 @@ TEST_F(CacheReclaimerTest, TestMetaIndexerSampleKeys01) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestSchedulePlanExecutorDelFailure) {
@@ -2185,7 +2240,7 @@ TEST_F(CacheReclaimerTest, TestEmptyInstanceGroups) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted when there are no instance groups
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestEmptyInstanceInfos) {
@@ -2249,7 +2304,7 @@ TEST_F(CacheReclaimerTest, TestEmptyInstanceInfos) {
     cache_reclaimer_->Stop();
 
     // no deletion requests should be submitted when there are no instance infos
-    ASSERT_TRUE(submitted_del_requests.empty());
+    ASSERT_TRUE(HasNoSubmittedDelRequests());
 }
 
 TEST_F(CacheReclaimerTest, TestMultipleInstanceGroups) {
@@ -2324,21 +2379,31 @@ TEST_F(CacheReclaimerTest, TestMultipleInstanceGroups) {
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->SetBatchingSize(request_context_.get(), 5));
     batch_get_loc_out_maps =
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
+    cache_reclaimer_->SetSleepIntervalMs(request_context_.get(), 0);
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
     ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
+    ASSERT_TRUE(WaitUntil([this] {
+        bool found_instance_1 = false;
+        bool found_instance_2 = false;
+        for (const auto &req : SubmittedDelRequestsSnapshot()) {
+            found_instance_1 = found_instance_1 || req.instance_id == "test_instance_id_1";
+            found_instance_2 = found_instance_2 || req.instance_id == "test_instance_id_2";
+        }
+        return found_instance_1 && found_instance_2;
+    }));
 
     cache_reclaimer_->Stop();
 
     // deletion requests should be submitted for both instance groups
-    ASSERT_FALSE(submitted_del_requests.empty());
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
 
     // check that we have requests for both instances
     bool found_instance_1 = false;
     bool found_instance_2 = false;
 
-    for (const auto &req : submitted_del_requests) {
+    for (const auto &req : requests) {
         if (req.instance_id == "test_instance_id_1") {
             found_instance_1 = true;
         } else if (req.instance_id == "test_instance_id_2") {
@@ -2411,7 +2476,7 @@ TEST_F(CacheReclaimerTest, TestKeyCountEdgeCases) {
         cache_reclaimer_->Stop();
 
         // with zero key count, the percentage usage would be 0%, so no reclaiming should happen
-        ASSERT_TRUE(submitted_del_requests.empty());
+        ASSERT_TRUE(HasNoSubmittedDelRequests());
     }
 
     {
@@ -2426,18 +2491,18 @@ TEST_F(CacheReclaimerTest, TestKeyCountEdgeCases) {
         instance_groups.emplace_back(ins_group);
 
         // clear requests from previous test
-        submitted_del_requests.clear();
+        ClearSubmittedDelRequests();
 
         batch_get_loc_out_maps = std::vector<CacheLocationMap>(sample_reclaim_keys.size(), CacheLocationMap{});
         ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        ASSERT_TRUE(WaitUntilSubmittedDelRequests());
         ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
         cache_reclaimer_->Stop();
 
         // with 100% key usage and trigger at 90%, reclaiming should happen
-        ASSERT_FALSE(submitted_del_requests.empty());
+        ASSERT_TRUE(HasSubmittedDelRequests());
     }
 
     {
@@ -2452,18 +2517,18 @@ TEST_F(CacheReclaimerTest, TestKeyCountEdgeCases) {
         instance_groups.emplace_back(ins_group);
 
         // clear requests from previous test
-        submitted_del_requests.clear();
+        ClearSubmittedDelRequests();
 
         batch_get_loc_out_maps = std::vector<CacheLocationMap>(sample_reclaim_keys.size(), CacheLocationMap{});
         ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        ASSERT_TRUE(WaitUntilSubmittedDelRequests());
         ASSERT_TRUE(cache_reclaimer_->IsRunning()); // the worker thread should still be running
 
         cache_reclaimer_->Stop();
 
         // group max key count is zero, reclaiming should happen
-        ASSERT_FALSE(submitted_del_requests.empty());
+        ASSERT_TRUE(HasSubmittedDelRequests());
     }
 }
 
@@ -2521,66 +2586,24 @@ TEST_F(CacheReclaimerTest, TestCronJobAdaptiveSleepInterval) {
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->SetBatchingSize(request_context_.get(), 1));
     batch_get_loc_out_maps =
         std::vector<CacheLocationMap>(cache_reclaimer_->GetBatchingSize(request_context_.get()), CacheLocationMap{});
+    const auto initial_sleep_interval = std::chrono::milliseconds(100);
+    cache_reclaimer_->SetSleepIntervalMs(request_context_.get(),
+                                         static_cast<std::uint32_t>(initial_sleep_interval.count()));
     ASSERT_EQ(ErrorCode::EC_OK, cache_reclaimer_->Start());
 
-    // worker thread should first sleep for 10ms then do the reclaiming
-    // multiple times with 0 sleep interval in between.
-    // here we set the wait time to be 16ms to verify the worker thread
-    // sleep interval is set to 0, or the reclaiming round would
-    // otherwise equal to 1 (see below for explanation).
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    // The worker should first sleep for initial_sleep_interval, do one
+    // reclaiming round, then reduce its sleep interval to 0 and immediately
+    // enter following rounds. Use a two-phase wait so the test does not depend
+    // on absolute scheduler timing, while still requiring the second round to
+    // arrive before the original sleep interval would have elapsed again.
+    ASSERT_TRUE(WaitUntilSubmittedDelRequests(initial_sleep_interval + std::chrono::milliseconds(1000)));
+    ASSERT_TRUE(WaitUntil(
+        [this] { return ListInstanceGroupCallCount() > 1 && SubmittedDelRequestCount() > 1; },
+        initial_sleep_interval / 2));
     cache_reclaimer_->Stop(); // join the worker thread
 
-    // the worker thread is synchronised by join(),
-    // so the count should be 1+1 if sleep interval reduction is not
-    // working:
-    //
-    //    [start]
-    //       |
-    //       |
-    //   sleep 10ms
-    //       |
-    //       |
-    //       V
-    // [1st triggered]
-    //       |
-    //       |
-    // sleep 6ms (stopping requested by main thread)
-    //       |
-    //       |
-    // working thread signaled and wake up immediately
-    //       |
-    //       |
-    //       V
-    //    [finish]
-    //
-    // but when the sleep interval reduction is working as expected,
-    // what's going on would be:
-    //
-    //    [start]
-    //       |
-    //       |
-    //   sleep 10ms
-    //       |
-    //       |
-    //       V
-    // [1st triggered]
-    // <sleep interval becomes 0>
-    //       |
-    //       |
-    // [2nd triggered]
-    // [3rd triggered]
-    // [   ......    ]
-    // [nth triggered]
-    //       |
-    //       |
-    //  (stopping requested)
-    //       |
-    //       |
-    //       V
-    //    [finish]
-    ASSERT_LT(1, list_ins_group_call_counter);
-    ASSERT_LT(1, submitted_del_requests.size());
+    ASSERT_LT(1, ListInstanceGroupCallCount());
+    ASSERT_LT(1, SubmittedDelRequestCount());
 }
 
 TEST_F(CacheReclaimerTest, TestCronJobAdaptiveSleepIntervalRecovery) {
@@ -2851,7 +2874,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(sample_reclaim_keys.size(), keys.size());
         ASSERT_EQ(get_out_properties.size(), maps.size());
     }
@@ -2862,7 +2885,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
     }
 
     {
@@ -2871,7 +2894,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(sample_reclaim_keys.size(), keys.size());
         ASSERT_EQ(get_out_properties.size(), maps.size());
     }
@@ -2882,7 +2905,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(1000, keys.size());
         ASSERT_EQ(1000, maps.size());
     }
@@ -2893,7 +2916,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(1000, keys.size());
         ASSERT_EQ(1000, maps.size());
     }
@@ -2904,7 +2927,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(999, keys.size());
         ASSERT_EQ(999, maps.size());
     }
@@ -2915,7 +2938,7 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(1001, keys.size());
         ASSERT_EQ(1001, maps.size());
     }
@@ -2926,10 +2949,9 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(1, keys.size());
-        // sampling_size_ <= delete_batch_size, will not get properties
-        ASSERT_EQ(0, maps.size());
+        ASSERT_EQ(1, maps.size());
     }
 
     {
@@ -2943,10 +2965,204 @@ TEST_F(CacheReclaimerTest, TestDoKeySampling) {
 
         std::vector<std::int64_t> keys;
         std::vector<std::map<std::string, std::string>> maps;
-        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_.get(), instance_infos.front(), keys, maps));
+        ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
         ASSERT_EQ(91, keys.size());
         ASSERT_EQ(91, maps.size());
     }
+}
+
+TEST_F(CacheReclaimerTest, TestDoKeySamplingFutureTimeout_SampleReclaimKeysHangs) {
+    // when SampleReclaimKeys blocks longer than the future timeout,
+    // DoKeySampling should return false instead of blocking forever
+    sample_reclaim_keys = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    get_out_properties = {
+        {{PROPERTY_LRU_TIME, "0"}},
+        {{PROPERTY_LRU_TIME, "1"}},
+        {{PROPERTY_LRU_TIME, "2"}},
+        {{PROPERTY_LRU_TIME, "3"}},
+        {{PROPERTY_LRU_TIME, "4"}},
+        {{PROPERTY_LRU_TIME, "5"}},
+        {{PROPERTY_LRU_TIME, "6"}},
+        {{PROPERTY_LRU_TIME, "7"}},
+        {{PROPERTY_LRU_TIME, "8"}},
+        {{PROPERTY_LRU_TIME, "9"}},
+    };
+
+    // set a very short future timeout (50ms) and a long sample delay (500ms)
+    cache_reclaimer_->future_timeout_ms_.store(50);
+    mi_sample_reclaim_delay = std::chrono::milliseconds{500};
+
+    // use multi-thread path: sampling_size > sampling_size_per_task
+    cache_reclaimer_->sampling_size_.store(10);
+    cache_reclaimer_->sampling_size_per_task_.store(5);
+
+    std::vector<std::int64_t> keys;
+    std::vector<std::map<std::string, std::string>> maps;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    // should return within the timeout budget (~50ms), not wait for the full 500ms task
+    ASSERT_LT(elapsed, std::chrono::milliseconds(300));
+
+    // in-flight counter was incremented for 2 tasks
+    ASSERT_GT(cache_reclaimer_->in_flight_sampling_tasks_.load(), 0u);
+
+    // wait for background tasks to finish naturally
+    while (cache_reclaimer_->in_flight_sampling_tasks_.load() > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+TEST_F(CacheReclaimerTest, TestDoKeySamplingFutureTimeout_GetPropertiesHangs) {
+    // when GetProperties blocks longer than the future timeout,
+    // DoKeySampling should return false instead of blocking forever
+    sample_reclaim_keys = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    get_out_properties = {
+        {{PROPERTY_LRU_TIME, "0"}},
+        {{PROPERTY_LRU_TIME, "1"}},
+        {{PROPERTY_LRU_TIME, "2"}},
+        {{PROPERTY_LRU_TIME, "3"}},
+        {{PROPERTY_LRU_TIME, "4"}},
+        {{PROPERTY_LRU_TIME, "5"}},
+        {{PROPERTY_LRU_TIME, "6"}},
+        {{PROPERTY_LRU_TIME, "7"}},
+        {{PROPERTY_LRU_TIME, "8"}},
+        {{PROPERTY_LRU_TIME, "9"}},
+    };
+
+    // set a very short future timeout (50ms) and a long GetProperties delay (500ms)
+    cache_reclaimer_->future_timeout_ms_.store(50);
+    mi_getprop_delay = std::chrono::milliseconds{500};
+
+    // use multi-thread path with sampling_size > batching_size to trigger GetProperties
+    cache_reclaimer_->sampling_size_.store(10);
+    cache_reclaimer_->sampling_size_per_task_.store(5);
+    cache_reclaimer_->batching_size_.store(1);
+
+    std::vector<std::int64_t> keys;
+    std::vector<std::map<std::string, std::string>> maps;
+    ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
+
+    // wait for background tasks to finish naturally
+    while (cache_reclaimer_->in_flight_sampling_tasks_.load() > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+TEST_F(CacheReclaimerTest, TestDoKeySamplingFutureTimeout_NoTimeoutOnFastTasks) {
+    // when tasks complete quickly, DoKeySampling should succeed normally
+    // even with a timeout configured
+    sample_reclaim_keys = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    get_out_properties = {
+        {{PROPERTY_LRU_TIME, "0"}},
+        {{PROPERTY_LRU_TIME, "1"}},
+        {{PROPERTY_LRU_TIME, "2"}},
+        {{PROPERTY_LRU_TIME, "3"}},
+        {{PROPERTY_LRU_TIME, "4"}},
+        {{PROPERTY_LRU_TIME, "5"}},
+        {{PROPERTY_LRU_TIME, "6"}},
+        {{PROPERTY_LRU_TIME, "7"}},
+        {{PROPERTY_LRU_TIME, "8"}},
+        {{PROPERTY_LRU_TIME, "9"}},
+    };
+
+    // set a reasonable future timeout (5000ms) and no delay
+    cache_reclaimer_->future_timeout_ms_.store(5000);
+    mi_sample_reclaim_delay = std::chrono::milliseconds{0};
+    mi_getprop_delay = std::chrono::milliseconds{0};
+
+    // use multi-thread path
+    cache_reclaimer_->sampling_size_.store(10);
+    cache_reclaimer_->sampling_size_per_task_.store(5);
+
+    std::vector<std::int64_t> keys;
+    std::vector<std::map<std::string, std::string>> maps;
+    ASSERT_TRUE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
+    ASSERT_EQ(10u, keys.size());
+
+    // all tasks completed, in-flight should be zero
+    ASSERT_EQ(0u, cache_reclaimer_->in_flight_sampling_tasks_.load());
+}
+
+TEST_F(CacheReclaimerTest, TestDoKeySamplingFutureTimeout_DeadlineBoundsAllFutures) {
+    // verify that the total wait is bounded by a single deadline, not
+    // N * timeout (where N is the number of worker tasks)
+    sample_reclaim_keys = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    get_out_properties = {
+        {{PROPERTY_LRU_TIME, "0"}},
+        {{PROPERTY_LRU_TIME, "1"}},
+        {{PROPERTY_LRU_TIME, "2"}},
+        {{PROPERTY_LRU_TIME, "3"}},
+        {{PROPERTY_LRU_TIME, "4"}},
+        {{PROPERTY_LRU_TIME, "5"}},
+        {{PROPERTY_LRU_TIME, "6"}},
+        {{PROPERTY_LRU_TIME, "7"}},
+        {{PROPERTY_LRU_TIME, "8"}},
+        {{PROPERTY_LRU_TIME, "9"}},
+    };
+
+    // 100ms timeout, 500ms delay; 5 worker tasks should all time out
+    // but total wait should be ~100ms, not 5 * 100ms
+    cache_reclaimer_->future_timeout_ms_.store(100);
+    mi_sample_reclaim_delay = std::chrono::milliseconds{500};
+
+    cache_reclaimer_->sampling_size_.store(10);
+    cache_reclaimer_->sampling_size_per_task_.store(2); // 5 tasks
+
+    std::vector<std::int64_t> keys;
+    std::vector<std::map<std::string, std::string>> maps;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    // should be bounded by ~100ms deadline, not 500ms (5 tasks * 100ms)
+    ASSERT_LT(elapsed, std::chrono::milliseconds(300));
+
+    // wait for background tasks to finish
+    while (cache_reclaimer_->in_flight_sampling_tasks_.load() > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+TEST_F(CacheReclaimerTest, TestDoKeySamplingFutureTimeout_WorkerSaturationGuard) {
+    // when all workers are occupied by timed-out tasks, subsequent
+    // DoKeySampling calls should fail fast without submitting more work
+    sample_reclaim_keys = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    get_out_properties = {
+        {{PROPERTY_LRU_TIME, "0"}},
+        {{PROPERTY_LRU_TIME, "1"}},
+        {{PROPERTY_LRU_TIME, "2"}},
+        {{PROPERTY_LRU_TIME, "3"}},
+        {{PROPERTY_LRU_TIME, "4"}},
+        {{PROPERTY_LRU_TIME, "5"}},
+        {{PROPERTY_LRU_TIME, "6"}},
+        {{PROPERTY_LRU_TIME, "7"}},
+        {{PROPERTY_LRU_TIME, "8"}},
+        {{PROPERTY_LRU_TIME, "9"}},
+    };
+
+    // simulate saturated worker pool by setting in_flight >= workers_.size()
+    cache_reclaimer_->in_flight_sampling_tasks_.store(cache_reclaimer_->workers_.size());
+
+    cache_reclaimer_->future_timeout_ms_.store(5000);
+    mi_sample_reclaim_delay = std::chrono::milliseconds{0};
+    cache_reclaimer_->sampling_size_.store(10);
+    cache_reclaimer_->sampling_size_per_task_.store(5);
+
+    std::vector<std::int64_t> keys;
+    std::vector<std::map<std::string, std::string>> maps;
+
+    // should immediately return false without submitting new work
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_FALSE(cache_reclaimer_->DoKeySampling(request_context_, instance_infos.front(), keys, maps));
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    ASSERT_LT(elapsed, std::chrono::milliseconds(50));
+
+    // restore
+    cache_reclaimer_->in_flight_sampling_tasks_.store(0);
 }
 
 TEST_F(CacheReclaimerTest, TestDupKeys) {
@@ -2992,9 +3208,18 @@ TEST_F(CacheReclaimerTest, TestDupKeys) {
         std::vector<std::int64_t> keys(sample_reclaim_keys);
         std::vector<std::map<std::string, std::string>> maps(get_out_properties);
         std::vector<std::int64_t> batch;
+        CacheReclaimer::AgeStats lru_age_stats;
         ASSERT_TRUE(
-            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch));
+            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch, lru_age_stats));
         ASSERT_EQ(9, batch.size());
+        // keys 1..10 unique, lru_times 0..9; tp=0 excluded from stats, tp=1..9 included (9 entries)
+        // ages: now_us-1, now_us-2, ..., now_us-9 → min=now_us-9, max=now_us-1, diff=8
+        EXPECT_GT(lru_age_stats.min_us, 0);
+        EXPECT_GT(lru_age_stats.max_us, 0);
+        EXPECT_GT(lru_age_stats.avg_us, 0);
+        EXPECT_LE(lru_age_stats.min_us, lru_age_stats.avg_us);
+        EXPECT_LE(lru_age_stats.avg_us, lru_age_stats.max_us);
+        EXPECT_EQ(lru_age_stats.max_us - lru_age_stats.min_us, 8);
     }
 
     {
@@ -3039,9 +3264,15 @@ TEST_F(CacheReclaimerTest, TestDupKeys) {
         std::vector<std::int64_t> keys(sample_reclaim_keys);
         std::vector<std::map<std::string, std::string>> maps(get_out_properties);
         std::vector<std::int64_t> batch;
+        CacheReclaimer::AgeStats lru_age_stats;
         ASSERT_TRUE(
-            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch));
+            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch, lru_age_stats));
         ASSERT_EQ(1, batch.size());
+        // all keys are 1 (only 1 unique key), first occurrence has tp=0 → excluded
+        // age_count=0 → Clear() called → all stats zeroed
+        EXPECT_EQ(lru_age_stats.min_us, 0);
+        EXPECT_EQ(lru_age_stats.max_us, 0);
+        EXPECT_EQ(lru_age_stats.avg_us, 0);
     }
 
     {
@@ -3086,9 +3317,18 @@ TEST_F(CacheReclaimerTest, TestDupKeys) {
         std::vector<std::int64_t> keys(sample_reclaim_keys);
         std::vector<std::map<std::string, std::string>> maps(get_out_properties);
         std::vector<std::int64_t> batch;
+        CacheReclaimer::AgeStats lru_age_stats;
         ASSERT_TRUE(
-            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch));
+            cache_reclaimer_->MakeBatchByLRU(request_context_.get(), instance_infos.front(), keys, maps, batch, lru_age_stats));
         ASSERT_EQ(2, batch.size());
+        // keys={1*7,2,1,1}, tp={9*7,10,9,9}; sorted → key=1(tp=9) then key=2(tp=10)
+        // ages: now_us-9 and now_us-10 → min=now_us-10, max=now_us-9, diff=1
+        EXPECT_GT(lru_age_stats.min_us, 0);
+        EXPECT_GT(lru_age_stats.max_us, 0);
+        EXPECT_GT(lru_age_stats.avg_us, 0);
+        EXPECT_LE(lru_age_stats.min_us, lru_age_stats.avg_us);
+        EXPECT_LE(lru_age_stats.avg_us, lru_age_stats.max_us);
+        EXPECT_EQ(lru_age_stats.max_us - lru_age_stats.min_us, 1);
     }
 }
 
@@ -3110,14 +3350,17 @@ TEST_F(CacheReclaimerTest, TestPerf) {
 
     for (int i = 0; i != sampling_sz_per_task; ++i) {
         sample_reclaim_keys.emplace_back(i);
-        get_out_properties.emplace_back(MetaIndexer::PropertyMap{{PROPERTY_LRU_TIME, "9"}});
+        get_out_properties.emplace_back(PropertyMap{{PROPERTY_LRU_TIME, "9"}});
     }
 
     batch_get_loc_out_maps = std::vector<CacheLocationMap>(
         batching_sz,
-        CacheLocationMap{
-            {"foo",
-             CacheLocation{"foo", CacheLocationStatus::CLS_SERVING, DataStorageType::DATA_STORAGE_TYPE_NFS, 8, {}}}});
+        CacheLocationMap{{"foo",
+                          std::make_shared<CacheLocation>("foo",
+                                                          CacheLocationStatus::CLS_SERVING,
+                                                          DataStorageType::DATA_STORAGE_TYPE_NFS,
+                                                          8,
+                                                          std::vector<LocationSpec>{})}});
 
     cache_reclaimer_->job_state_flag_ = true;
 
@@ -3130,8 +3373,9 @@ TEST_F(CacheReclaimerTest, TestPerf) {
         }
     }
 
-    ASSERT_FALSE(submitted_del_requests.empty());
-    const auto &req = submitted_del_requests.back();
+    const auto requests = SubmittedDelRequestsSnapshot();
+    ASSERT_FALSE(requests.empty());
+    const auto &req = requests.back();
     ASSERT_EQ(batching_sz, req.block_keys.size());
 
     std::uint64_t reclaim_cron_count_v;

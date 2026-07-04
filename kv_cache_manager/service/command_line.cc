@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "kv_cache_manager/common/build_version.h"
+#include "kv_cache_manager/common/crash_handler.h"
 #include "kv_cache_manager/service/server.h"
 #include "kv_cache_manager/service/server_config.h"
 namespace kv_cache_manager {
@@ -29,8 +31,8 @@ void CommandArgs::ParseCmdLine(int argc, char *const argv[]) {
             PrintUsage(argv[0]);
             exit(1);
         case 'v':
-            fprintf(stderr, "BUILD_TIME: %s\nGIT: %s\n", SYS_GLB_BUILD_TIME, SYS_GLB_GIT_INFO);
-            fprintf(stderr, "RPM VERSION: %s\n", SYS_GLB_VERSION);
+            fprintf(stderr, "BUILD_TIME: %s\nGIT: %s\n", kKvcmBuildTime, kKvcmGitCommit);
+            fprintf(stderr, "RPM VERSION: %s\n", kKvcmFullVersion);
             exit(1);
         case 'd':
             daemon_ = true;
@@ -127,8 +129,16 @@ int CommandLine::Run(int argc, const char *argv[]) {
     RegisterSignal();
 
     server_.reset(new Server);
-    server_->Init(config);
-    server_->Start();
+    if (!server_->Init(config)) {
+        fprintf(stderr, "Server init failed.\n");
+        return -1;
+    }
+    if (!server_->Start()) {
+        fprintf(stderr, "Server start failed.\n");
+        server_->Stop();
+        server_->Wait();
+        return -1;
+    }
     server_->Wait();
     server_.reset();
     LoggerBroker::DestroyLogger();
@@ -179,6 +189,7 @@ void CommandLine::UpdateLogLevel(uint32_t log_level) {
 }
 
 void CommandLine::RegisterSignal() {
+    CrashHandler::Install();
     signal(SIGPIPE, SIG_IGN);
     signal(SIGUSR1, __sign_handler__);
     signal(SIGUSR2, __sign_handler__);

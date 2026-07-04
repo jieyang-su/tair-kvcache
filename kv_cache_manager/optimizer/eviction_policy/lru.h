@@ -12,7 +12,6 @@ namespace kv_cache_manager {
 
 class LruEvictionPolicy : public EvictionPolicy {
 private:
-    std::string name_;
     int32_t shard_count_ = 1;
     int32_t sample_times_ = 1;
     double amplification_factor_ = 1.0;
@@ -37,16 +36,14 @@ private:
     void ReturnCandidates(const std::vector<CandidateEntry> &candidates);
     void CommitEviction(const std::vector<CandidateEntry> &candidates, std::vector<BlockEntry *> &evicted_blocks);
 
+    // NVI hook：外部统一通过基类 OnBlockAccessedWithOptions 入口调用。
+    void OnBlockAccessed(BlockEntry *block, int64_t timestamp) override;
+
 public:
     explicit LruEvictionPolicy(const std::string &name, const LruParams &params);
     ~LruEvictionPolicy() override;
-
-    std::string name() const override { return name_; }
-    void set_name(const std::string &name) override { name_ = name; }
-    // TODO 应该根据块的last_access_time来维护LRU顺序
     void OnBlockWritten(BlockEntry *block) override;
     void OnNodeWritten(std::vector<BlockEntry *> &blocks) override;
-    void OnBlockAccessed(BlockEntry *block, int64_t timestamp) override;
     std::vector<BlockEntry *> EvictBlocks(size_t count) override;
     void Clear() override;
     size_t size() const override { return node_map_.size(); }

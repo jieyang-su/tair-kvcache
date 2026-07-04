@@ -323,7 +323,7 @@ TEST_F(RedisClientTest, TestGet) {
         std::vector<std::map<std::string, std::string>> field_maps;
         std::vector<std::map<std::string, std::string>> expected_field_maps{{{"f1", "v1-1-0"}, {"f2", "v1-2-0"}},
                                                                             {{"f1", "v2-1-0"}, {"f2", "v2-2-0"}}};
-        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ {"f1", "f2"}, field_maps);
+        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ std::vector<std::string>{"f1", "f2"}, field_maps);
         ASSERT_EQ(std::vector<ErrorCode>(keys.size(), EC_OK), ec_per_key);
         ASSERT_EQ(expected_field_maps, field_maps);
     }
@@ -340,7 +340,7 @@ TEST_F(RedisClientTest, TestGet) {
         std::vector<std::map<std::string, std::string>> field_maps;
         std::vector<std::map<std::string, std::string>> expected_field_maps{{}, {{"f2", "v2-2-0"}}};
         std::vector<ErrorCode> expected_ec_per_key{EC_NOENT, EC_OK};
-        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ {"f1", "f2"}, field_maps);
+        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ std::vector<std::string>{"f1", "f2"}, field_maps);
         ASSERT_EQ(expected_ec_per_key, ec_per_key);
         ASSERT_EQ(expected_field_maps, field_maps);
     }
@@ -358,7 +358,7 @@ TEST_F(RedisClientTest, TestGet) {
         std::vector<std::map<std::string, std::string>> field_maps;
         std::vector<std::map<std::string, std::string>> expected_field_maps{{}, {}};
         std::vector<ErrorCode> expected_ec_per_key{EC_NOENT, EC_NOENT};
-        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ {"f1", "f2"}, field_maps);
+        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ std::vector<std::string>{"f1", "f2"}, field_maps);
         ASSERT_EQ(expected_ec_per_key, ec_per_key);
         ASSERT_EQ(expected_field_maps, field_maps);
     }
@@ -376,7 +376,7 @@ TEST_F(RedisClientTest, TestGet) {
         std::vector<std::map<std::string, std::string>> field_maps;
         std::vector<std::map<std::string, std::string>> expected_field_maps(2);
         std::vector<ErrorCode> expected_ec_per_key{EC_ERROR, EC_ERROR};
-        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ {"f1", "f2"}, field_maps);
+        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ std::vector<std::string>{"f1", "f2"}, field_maps);
         ASSERT_EQ(expected_ec_per_key, ec_per_key);
         ASSERT_EQ(expected_field_maps, field_maps);
     }
@@ -716,7 +716,7 @@ TEST_F(RedisClientTest, TestKeysAndFieldsWithSpaces) {
         std::vector<std::map<std::string, std::string>> field_maps;
         std::vector<std::map<std::string, std::string>> expected_field_maps{
             {{"field with spaces", "value with spaces"}, {"another field", "another value"}}};
-        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ {"field with spaces", "another field"}, field_maps);
+        auto ec_per_key = redis_client_->Get(keys, /*field_names*/ std::vector<std::string>{"field with spaces", "another field"}, field_maps);
         ASSERT_EQ(std::vector<ErrorCode>(keys.size(), EC_OK), ec_per_key);
         ASSERT_EQ(expected_field_maps, field_maps);
     }
@@ -796,6 +796,124 @@ TEST_F(RedisClientTest, TestKeysAndFieldsWithSpaces) {
         std::vector<std::string> expected_keys{"key with spaces", "key with spaces another"};
         ASSERT_EQ(expected_keys, keys);
     }
+}
+
+// ==================== Static Command Builder Tests ====================
+
+TEST_F(RedisClientTest, TestBuildSetCmds) {
+    std::vector<std::string> keys = {"key1", "key2"};
+    std::vector<std::map<std::string, std::string>> field_maps = {
+        {{"f1", "v1"}, {"f2", "v2"}},
+        {{"f3", "v3"}},
+    };
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildSetCmds(keys, field_maps, cmds);
+
+    // key1: DEL + HSET, key2: DEL + HSET = 4 cmds
+    ASSERT_EQ(4, cmds.size());
+    ASSERT_EQ(CmdArgs({"DEL", "key1"}), cmds[0]);
+    ASSERT_EQ("HSET", cmds[1][0]);
+    ASSERT_EQ("key1", cmds[1][1]);
+    ASSERT_EQ(6, cmds[1].size()); // HSET key f1 v1 f2 v2
+    ASSERT_EQ(CmdArgs({"DEL", "key2"}), cmds[2]);
+    ASSERT_EQ("HSET", cmds[3][0]);
+    ASSERT_EQ("key2", cmds[3][1]);
+    ASSERT_EQ(4, cmds[3].size()); // HSET key f3 v3
+}
+
+TEST_F(RedisClientTest, TestBuildSetCmdsEmptyFieldMap) {
+    std::vector<std::string> keys = {"key1"};
+    std::vector<std::map<std::string, std::string>> field_maps = {{}};
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildSetCmds(keys, field_maps, cmds);
+
+    // Empty field_map: DEL only, no HSET
+    ASSERT_EQ(1, cmds.size());
+    ASSERT_EQ(CmdArgs({"DEL", "key1"}), cmds[0]);
+}
+
+TEST_F(RedisClientTest, TestBuildSetCmdsEmpty) {
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildSetCmds({}, {}, cmds);
+    ASSERT_TRUE(cmds.empty());
+}
+
+TEST_F(RedisClientTest, TestBuildHashSetCmds) {
+    std::vector<std::string> keys = {"k1", "k2", "k3"};
+    std::vector<std::map<std::string, std::string>> field_maps = {
+        {{"a", "1"}},
+        {},           // empty - should be skipped
+        {{"b", "2"}, {"c", "3"}},
+    };
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildHashSetCmds(keys, field_maps, cmds);
+
+    // k1: HSET, k2: skipped, k3: HSET = 2 cmds
+    ASSERT_EQ(2, cmds.size());
+    ASSERT_EQ("HSET", cmds[0][0]);
+    ASSERT_EQ("k1", cmds[0][1]);
+    ASSERT_EQ(4, cmds[0].size()); // HSET k1 a 1
+    ASSERT_EQ("HSET", cmds[1][0]);
+    ASSERT_EQ("k3", cmds[1][1]);
+    ASSERT_EQ(6, cmds[1].size()); // HSET k3 b 2 c 3
+}
+
+TEST_F(RedisClientTest, TestBuildHashSetCmdsEmpty) {
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildHashSetCmds({}, {}, cmds);
+    ASSERT_TRUE(cmds.empty());
+}
+
+TEST_F(RedisClientTest, TestBuildDeleteCmds) {
+    std::vector<std::string> keys = {"key_a", "key_b", "key_c"};
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildDeleteCmds(keys, cmds);
+
+    ASSERT_EQ(3, cmds.size());
+    ASSERT_EQ(CmdArgs({"DEL", "key_a"}), cmds[0]);
+    ASSERT_EQ(CmdArgs({"DEL", "key_b"}), cmds[1]);
+    ASSERT_EQ(CmdArgs({"DEL", "key_c"}), cmds[2]);
+}
+
+TEST_F(RedisClientTest, TestBuildDeleteCmdsEmpty) {
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildDeleteCmds({}, cmds);
+    ASSERT_TRUE(cmds.empty());
+}
+
+TEST_F(RedisClientTest, TestBuildHashDeleteCmds) {
+    std::vector<std::string> keys = {"k1", "k2", "k3"};
+    std::vector<std::vector<std::string>> field_names_vec = {
+        {"f1", "f2"},
+        {},         // empty - should be skipped
+        {"f3"},
+    };
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildHashDeleteCmds(keys, field_names_vec, cmds);
+
+    // k1: HDEL, k2: skipped, k3: HDEL = 2 cmds
+    ASSERT_EQ(2, cmds.size());
+    ASSERT_EQ(CmdArgs({"HDEL", "k1", "f1", "f2"}), cmds[0]);
+    ASSERT_EQ(CmdArgs({"HDEL", "k3", "f3"}), cmds[1]);
+}
+
+TEST_F(RedisClientTest, TestBuildHashDeleteCmdsEmpty) {
+    std::vector<CmdArgs> cmds;
+    RedisClient::BuildHashDeleteCmds({}, {}, cmds);
+    ASSERT_TRUE(cmds.empty());
+}
+
+TEST_F(RedisClientTest, TestBuildCmdsAppendToExisting) {
+    std::vector<CmdArgs> cmds;
+    cmds.push_back({"EXISTING_CMD"});
+
+    RedisClient::BuildDeleteCmds({"k1"}, cmds);
+    RedisClient::BuildHashSetCmds({"k2"}, {{{"f", "v"}}}, cmds);
+
+    ASSERT_EQ(3, cmds.size());
+    ASSERT_EQ("EXISTING_CMD", cmds[0][0]);
+    ASSERT_EQ("DEL", cmds[1][0]);
+    ASSERT_EQ("HSET", cmds[2][0]);
 }
 
 } // namespace kv_cache_manager

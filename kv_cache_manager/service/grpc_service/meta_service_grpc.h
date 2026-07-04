@@ -12,12 +12,14 @@ namespace kv_cache_manager {
 
 class MetaServiceImpl;
 class MetricsRegistry;
+struct MetricsLifecycle;
 
 class MetaServiceGRpc final : public proto::meta::MetaService::Service, public MetaServiceMetricsBase {
 public:
     MetaServiceGRpc(std::shared_ptr<MetricsRegistry> metrics_registry,
                     std::shared_ptr<MetaServiceImpl> meta_service_impl,
-                    std::shared_ptr<RegistryManager> registry_manager);
+                    std::shared_ptr<RegistryManager> registry_manager,
+                    std::shared_ptr<MetricsLifecycle> metrics_lifecycle = nullptr);
 
     void Init();
 
@@ -34,6 +36,10 @@ public:
     grpc::Status GetCacheLocation(grpc::ServerContext *context,
                                   const proto::meta::GetCacheLocationRequest *request,
                                   proto::meta::GetCacheLocationResponse *response) override;
+
+    grpc::Status GetCacheLocationsByBackend(grpc::ServerContext *context,
+                                            const proto::meta::GetCacheLocationsByBackendRequest *request,
+                                            proto::meta::GetCacheLocationsByBackendResponse *response) override;
 
     grpc::Status GetCacheLocationLen(grpc::ServerContext *context,
                                      const proto::meta::GetCacheLocationLenRequest *request,
@@ -54,6 +60,10 @@ public:
     grpc::Status GetClusterInfo(grpc::ServerContext *context,
                                 const proto::meta::GetClusterInfoRequest *request,
                                 proto::meta::GetClusterInfoResponse *response) override;
+
+    grpc::Status ReportEvent(grpc::ServerContext *context,
+                             const proto::meta::ReportEventRequest *request,
+                             proto::meta::ReportEventResponse *response) override;
 
 private:
     std::shared_ptr<MetaServiceImpl> meta_service_impl_;

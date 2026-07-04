@@ -1,13 +1,16 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "cache_location.h"
 #include "kv_cache_manager/common/error_code.h"
 #include "kv_cache_manager/common/request_context.h"
 #include "kv_cache_manager/manager/select_location_policy.h"
+#include "kv_cache_manager/meta/cache_location.h"
+#include "kv_cache_manager/meta/types.h"
 
 namespace kv_cache_manager {
 
@@ -16,13 +19,24 @@ using SubmitDelReqFunc = std::function<void(const std::vector<std::int64_t> &blk
 
 class MetaIndexer;
 
+enum class LocationSelectStrategy : int32_t {
+    LSS_UNSPECIFIED = 0,
+    LSS_V6D_PREFIX = 1,   // 对应v6d侧，best_effort = false
+    LSS_V6D_COVERAGE = 2, // 对应v6d侧，best_effort = true
+    LSS_WEIGHTED_RANDOM = 3,
+};
+
+struct BackendSelector {
+    DataStorageType backend_type;
+    LocationSelectStrategy strategy;
+};
+
 class MetaSearcher {
 public:
     using KeyType = int64_t;
     using KeyVector = std::vector<KeyType>;
     using UriType = std::string;
     using UriVector = std::vector<UriType>;
-    static const std::string PROPERTY_PREV_BLOCK_KEY;
 
     explicit MetaSearcher(const std::shared_ptr<MetaIndexer> &meta_manager);
     MetaSearcher(const std::shared_ptr<MetaIndexer> &meta_indexer,
@@ -41,6 +55,11 @@ public:
                                    const KeyVector &keys,
                                    CacheLocationVector &out_locations,
                                    SelectLocationPolicy *policy) const;
+    ErrorCode BatchGetBestLocationByBackend(RequestContext *request_context,
+                                            const KeyVector &keys,
+                                            LocationsPerKey &out_locations,
+                                            SelectLocationPolicy *policy,
+                                            const std::vector<BackendSelector> &selectors) const;
     ErrorCode ReverseRollSlideWindowMatch(RequestContext *request_context,
                                           const KeyVector &keys,
                                           int32_t sw_size,
@@ -54,6 +73,16 @@ public:
                                const KeyVector &keys,
                                const CacheLocationVector &locations,
                                std::vector<std::string> &out_location_ids);
+    struct UpsertLocation {
+        std::string location_id;
+        DataStorageType type;
+        CacheLocationStatus status;
+        std::vector<LocationSpec> specs;
+    };
+    ErrorCode BatchUpsertLocations(RequestContext *request_context,
+                                   const KeyVector &keys,
+                                   const std::vector<std::vector<UpsertLocation>> &new_locations_per_key,
+                                   std::vector<ErrorCode> &out_per_key_ec);
     struct LocationUpdateTask {
         std::string location_id;
         CacheLocationStatus new_status;
@@ -83,6 +112,15 @@ public:
                                   const KeyVector &keys,
                                   const std::vector<std::string> &location_ids,
                                   std::vector<ErrorCode> &results);
+    ErrorCode BatchDeleteLocations(RequestContext *request_context,
+                                   const KeyVector &keys,
+                                   const LocationIdsPerKey &location_ids_per_key,
+                                   std::vector<std::vector<ErrorCode>> &out_per_location_ec);
+    ErrorCode CleanupLocationsByHost(RequestContext *request_context,
+                                     const std::string &host_suffix,
+                                     DataStorageType storage_type,
+                                     size_t scan_batch_size = 1000,
+                                     std::function<bool()> should_abort = nullptr);
 
 private:
     struct StorageTypeWeights {

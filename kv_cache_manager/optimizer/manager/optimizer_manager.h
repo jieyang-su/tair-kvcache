@@ -19,7 +19,9 @@ namespace kv_cache_manager {
 
 class OptimizerManager {
 public:
-    OptimizerManager(const OptimizerConfig &config, bool enable_lifecycle_tracking = false);
+    OptimizerManager(const OptimizerConfig &config,
+                     bool enable_lifecycle_tracking = false,
+                     bool enable_template_analysis = false);
     ~OptimizerManager() = default;
     bool Init();
 
@@ -30,13 +32,13 @@ public:
                              const std::string &trace_id,
                              const int64_t timestamp,
                              const std::vector<int64_t> &block_ids,
-                             const std::vector<int64_t> &token_ids);
+                             const int64_t ttl_seconds = 0);
     GetCacheLocationRes GetCacheLocation(const std::string &instance_id,
                                          const std::string &trace_id,
                                          const int64_t timestamp,
                                          const std::vector<int64_t> &block_ids,
-                                         const std::vector<int64_t> &token_ids,
-                                         const BlockMask &block_mask);
+                                         const BlockMask &block_mask,
+                                         const int64_t input_len);
     void AnalyzeResults();
 
     // 导出前缀树用于可视化
@@ -62,6 +64,8 @@ private:
     OptimizerConfig config_;
     std::unordered_map<std::string, OptInstanceGroupConfig> instance_group_configs_;
     std::unordered_map<std::string, OptInstanceConfig> instance_configs_;
+    std::unordered_map<std::string, bool> instance_group_ttl_disabled_;
+    std::unordered_map<std::string, bool> instance_ttl_refresh_on_read_;
 
     std::shared_ptr<OptEvictionManager> eviction_manager_;
     std::shared_ptr<OptIndexerManager> indexer_manager_;
@@ -73,5 +77,6 @@ private:
     TemplatePrefixTracker *template_prefix_tracker_ = nullptr;
 
     bool enable_lifecycle_tracking_ = false;
+    bool enable_template_analysis_ = false;
 };
 } // namespace kv_cache_manager

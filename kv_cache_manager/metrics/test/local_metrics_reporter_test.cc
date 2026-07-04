@@ -19,12 +19,12 @@
 
 using namespace kv_cache_manager;
 
-std::size_t MetaIndexer_GetCacheUsage_stub() noexcept { return 16; }
+std::size_t MetaIndexer_GetMemUsage_stub() noexcept { return 16; }
 
 class LocalMetricsReporterTest : public TESTBASE {
 public:
     void SetUp() override {
-        stub_.set(ADDR(MetaIndexer, GetCacheUsage), MetaIndexer_GetCacheUsage_stub);
+        stub_.set(ADDR(MetaIndexer, GetMemUsage), MetaIndexer_GetMemUsage_stub);
 
         metrics_registry_ = std::make_shared<MetricsRegistry>();
         registry_manager_ = std::make_shared<RegistryManager>("", metrics_registry_);
@@ -33,7 +33,7 @@ public:
         reporter_->Init(cache_manager_, metrics_registry_, "");
     }
 
-    void TearDown() override { stub_.reset(ADDR(MetaIndexer, GetCacheUsage)); }
+    void TearDown() override { stub_.reset(ADDR(MetaIndexer, GetMemUsage)); }
 
     Stub stub_;
     std::shared_ptr<MetricsRegistry> metrics_registry_;
@@ -168,12 +168,12 @@ TEST_F(LocalMetricsReporterTest, TestReportPerQuery02) {
     ServiceMetricsCollector collector(metrics_registry_);
     collector.Init();
 
-    EXPECT_EQ(3 + 5 + 11 + 5 + 17, metrics_registry_->GetSize());
+    EXPECT_EQ(3 + 5 + 14 + 6 + 23, metrics_registry_->GetSize());
 
     {
         reporter_->ReportPerQuery(&collector);
 
-        EXPECT_EQ(3 + 5 + 11 + 5 + 17, metrics_registry_->GetSize());
+        EXPECT_EQ(3 + 5 + 14 + 6 + 23, metrics_registry_->GetSize());
 
         std::uint64_t v;
         GET_METRICS_(&collector, service, query_counter, v);
@@ -190,7 +190,7 @@ TEST_F(LocalMetricsReporterTest, TestReportPerQuery02) {
 
         reporter_->ReportPerQuery(&collector);
 
-        EXPECT_EQ(3 + 5 + 11 + 5 + 17, metrics_registry_->GetSize());
+        EXPECT_EQ(3 + 5 + 14 + 6 + 23, metrics_registry_->GetSize());
 
         std::uint64_t v;
         GET_METRICS_(&collector, service, query_counter, v);
@@ -300,8 +300,11 @@ TEST_F(LocalMetricsReporterTest, TestReportInterval02) {
 TEST_F(LocalMetricsReporterTest, TestReportIntervalCacheManagerMetrics) {
     cache_manager_->meta_indexer_manager_ = std::make_shared<MetaIndexerManager>();
     cache_manager_->write_location_manager_ = std::make_shared<WriteLocationManager>();
-    cache_manager_->metrics_recorder_ = std::make_shared<CacheManagerMetricsRecorder>(
-        cache_manager_->meta_indexer_manager_, cache_manager_->write_location_manager_, registry_manager_);
+    cache_manager_->metrics_recorder_ =
+        std::make_shared<CacheManagerMetricsRecorder>(cache_manager_->meta_indexer_manager_,
+                                                      cache_manager_->write_location_manager_,
+                                                      registry_manager_,
+                                                      cache_manager_->metrics_lifecycle());
 
     RequestContext request_context("test_trace");
     InstanceGroup instance_group;
@@ -344,5 +347,21 @@ TEST_F(LocalMetricsReporterTest, TestReportIntervalCacheManagerMetrics) {
         GET_METRICS_(p, cache_manager_instance, byte_size, byte_size_v);
         EXPECT_DOUBLE_EQ(5, key_count_v);
         EXPECT_DOUBLE_EQ(5 * 1024, byte_size_v);
+
+        // async_queue metrics should be zero since the default meta backend has no async queues
+        double async_max_v, async_avg_v;
+        GET_METRICS_(p, cache_manager_instance, async_queue_max_size, async_max_v);
+        GET_METRICS_(p, cache_manager_instance, async_queue_avg_size, async_avg_v);
+        EXPECT_DOUBLE_EQ(0., async_max_v);
+        EXPECT_DOUBLE_EQ(0., async_avg_v);
+
+        // async write stats metrics should be zero since the default meta backend has no async write path
+        double flush_key_v, flush_time_v, pipeline_err_v;
+        GET_METRICS_(p, cache_manager_instance, async_flush_key_count, flush_key_v);
+        GET_METRICS_(p, cache_manager_instance, async_batch_flush_time_us, flush_time_v);
+        GET_METRICS_(p, cache_manager_instance, async_pipeline_error_count, pipeline_err_v);
+        EXPECT_DOUBLE_EQ(0., flush_key_v);
+        EXPECT_DOUBLE_EQ(0., flush_time_v);
+        EXPECT_DOUBLE_EQ(0., pipeline_err_v);
     }
 }

@@ -10,7 +10,22 @@ cc_test(
         "//kv_cache_manager/common:unittest",
         "//kv_cache_manager/optimizer/config",
         "//kv_cache_manager/optimizer/eviction_policy",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
+        "//kv_cache_manager/data_storage:common_define",
+    ],
+)
+
+cc_test(
+    name = "TtlEvictionPolicyTest",
+    srcs = [
+        "ttl_eviction_policy_test.cc",
+    ],
+    copts = ["-fno-access-control"],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/config",
+        "//kv_cache_manager/optimizer/eviction_policy",
+        "//kv_cache_manager/manager:cache_location_view",
         "//kv_cache_manager/data_storage:common_define",
     ],
 )
@@ -26,7 +41,7 @@ cc_test(
         "//kv_cache_manager/optimizer/config",
         "//kv_cache_manager/optimizer/eviction_policy",
         "//kv_cache_manager/optimizer/index",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/data_storage:common_define",
     ],
 )
@@ -42,7 +57,7 @@ cc_test(
         "//kv_cache_manager/optimizer/config",
         "//kv_cache_manager/optimizer/eviction_policy",
         "//kv_cache_manager/optimizer/manager",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/data_storage:common_define",
     ],
 )
@@ -55,12 +70,24 @@ cc_test(
     copts = ["-fno-access-control"],
     deps = [
         "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/analysis",
         "//kv_cache_manager/optimizer/config",
         "//kv_cache_manager/optimizer/eviction_policy",
         "//kv_cache_manager/optimizer/index",
         "//kv_cache_manager/optimizer/manager",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/data_storage:common_define",
+    ],
+)
+
+cc_test(
+    name = "StandardTraceLoaderTest",
+    srcs = [
+        "standard_trace_loader_test.cc",
+    ],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/trace_loader",
     ],
 )
 
@@ -74,7 +101,7 @@ cc_test(
         "//kv_cache_manager/common:unittest",
         "//kv_cache_manager/optimizer/config",
         "//kv_cache_manager/optimizer/manager",
-        "//kv_cache_manager/manager:cache_location",
+        "//kv_cache_manager/meta:cache_location",
         "//kv_cache_manager/data_storage:common_define",
     ],
 )
@@ -83,6 +110,17 @@ py_binary(
     name = "asan_runner",
     srcs = ["asan_runner.py"],
     visibility = ["//visibility:private"],
+)
+
+py_test(
+    name = "MultiInstanceReplayPyTest",
+    srcs = [
+        "multi_instance_replay_py_test.py",
+    ],
+    main = "multi_instance_replay_py_test.py",
+    deps = [
+        "//kv_cache_manager/optimizer/analysis/script:multi_instance_replay_lib",
+    ],
 )
 
 py_test(

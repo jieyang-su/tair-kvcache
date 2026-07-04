@@ -22,13 +22,16 @@ cc_library(
         ":data_storage_selector",
         ":hash_util",
         ":meta_searcher",
+
         ":reclaimer_task_supervisor",
         ":startup_config_loader",
         ":write_location_manager",
         "//kv_cache_manager/common",
         "//kv_cache_manager/config",
+        "//kv_cache_manager/data_storage",
         "//kv_cache_manager/event:event_publisher",
         "//kv_cache_manager/metrics:metrics_collector",
+        "//kv_cache_manager/metrics:metrics_lifecycle",
         "//kv_cache_manager/metrics:metrics_registry",
     ],
 )
@@ -42,7 +45,7 @@ cc_library(
         "cache_location_view.h",
     ],
     deps = [
-        ":cache_location",
+        "//kv_cache_manager/meta:cache_location",
     ],
 )
 
@@ -56,21 +59,6 @@ cc_library(
     ],
     deps = [
         ":cache_location_view",
-    ],
-)
-
-cc_library(
-    name = "cache_location",
-    srcs = [
-        "cache_location.cc",
-    ],
-    hdrs = [
-        "cache_location.h",
-    ],
-    deps = [
-        "//kv_cache_manager/common",
-        "//kv_cache_manager/common:string_util",
-        "//kv_cache_manager/data_storage:common_define",
     ],
 )
 
@@ -113,8 +101,8 @@ cc_library(
     deps = [
         ":select_location_policy",
         "//kv_cache_manager/common",
-        "//kv_cache_manager/manager:cache_location",
         "//kv_cache_manager/meta",
+        "//kv_cache_manager/meta:cache_location",
     ],
 )
 
@@ -157,7 +145,7 @@ cc_library(
     srcs = ["select_location_policy.cc"],
     hdrs = ["select_location_policy.h"],
     deps = [
-        ":cache_location",
+        "//kv_cache_manager/meta:cache_location",
     ],
 )
 
@@ -169,5 +157,7 @@ cc_library(
         ":write_location_manager",
         "//kv_cache_manager/config",
         "//kv_cache_manager/meta:meta_indexer_manager",
+        "//kv_cache_manager/metrics:metrics_lifecycle",
     ],
 )
+

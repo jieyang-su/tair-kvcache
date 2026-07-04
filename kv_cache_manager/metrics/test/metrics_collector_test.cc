@@ -1,5 +1,8 @@
+#include <atomic>
 #include <memory>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "kv_cache_manager/common/unittest.h"
 #include "kv_cache_manager/metrics/metrics_collector.h"
@@ -36,10 +39,11 @@ TEST_F(MetricsCollectorTest, MetaIndexerMetricsTest) {
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, search_cache_hit_ratio), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, io_data_size), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, put_io_time_us), 0.);
-    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, update_io_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, upsert_io_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, lock_wait_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, delete_io_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, get_io_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, rmw_get_io_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_put_key_count), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_update_key_count), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_skip_key_count), 0.);
@@ -54,10 +58,11 @@ TEST_F(MetricsCollectorTest, MetaIndexerMetricsTest) {
     SET_METRICS_(p, meta_indexer, search_cache_hit_ratio, 50.);
     SET_METRICS_(p, meta_indexer, io_data_size, 2048.);
     SET_METRICS_(p, meta_indexer, put_io_time_us, 1000.);
-    SET_METRICS_(p, meta_indexer, update_io_time_us, 1000.);
     SET_METRICS_(p, meta_indexer, upsert_io_time_us, 1000.);
+    SET_METRICS_(p, meta_indexer, lock_wait_time_us, 200.);
     SET_METRICS_(p, meta_indexer, delete_io_time_us, 500.);
     SET_METRICS_(p, meta_indexer, get_io_time_us, 100.);
+    SET_METRICS_(p, meta_indexer, rmw_get_io_time_us, 1000.);
     SET_METRICS_(p, meta_indexer, read_modify_write_put_key_count, 100.);
     SET_METRICS_(p, meta_indexer, read_modify_write_update_key_count, 200.);
     SET_METRICS_(p, meta_indexer, read_modify_write_skip_key_count, 10.);
@@ -71,14 +76,32 @@ TEST_F(MetricsCollectorTest, MetaIndexerMetricsTest) {
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, search_cache_hit_ratio), 50.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, io_data_size), 2048.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, put_io_time_us), 1000.);
-    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, update_io_time_us), 1000.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, upsert_io_time_us), 1000.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, lock_wait_time_us), 200.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, delete_io_time_us), 500.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, get_io_time_us), 100.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, rmw_get_io_time_us), 1000.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_put_key_count), 100.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_update_key_count), 200.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_skip_key_count), 10.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, read_modify_write_delete_key_count), 10.);
+
+    // async enqueue per-query metrics
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, async_enqueue_timeout_key_count), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, async_enqueue_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_put_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_upsert_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_delete_time_us), 0.);
+    SET_METRICS_(p, meta_indexer, async_enqueue_timeout_key_count, 5.);
+    SET_METRICS_(p, meta_indexer, async_enqueue_time_us, 800.);
+    SET_METRICS_(p, meta_indexer, cache_backend_put_time_us, 400.);
+    SET_METRICS_(p, meta_indexer, cache_backend_upsert_time_us, 500.);
+    SET_METRICS_(p, meta_indexer, cache_backend_delete_time_us, 300.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, async_enqueue_timeout_key_count), 5.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, async_enqueue_time_us), 800.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_put_time_us), 400.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_upsert_time_us), 500.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_indexer, cache_backend_delete_time_us), 300.);
 }
 
 // Test MetaSearcher metrics functionality
@@ -90,7 +113,8 @@ TEST_F(MetricsCollectorTest, MetaSearcherMetricsTest) {
     ASSERT_NE(nullptr, p);
 
     EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_get_time_us), 0.);
-    EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_read_modify_write_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_read_modify_write_block_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_read_modify_write_location_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_searcher, index_serialize_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_searcher, index_deserialize_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_query_times), 0.);
@@ -104,12 +128,15 @@ TEST_F(MetricsCollectorTest, MetaSearcherMetricsTest) {
 
     // Test time measurement for indexer get
     KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, MetaSearcherIndexerGet);
-    KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, MetaSearcherIndexerReadModifyWrite);
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, MetaSearcherIndexerReadModifyWriteBlock);
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, MetaSearcherIndexerReadModifyWriteLocation);
     usleep(1000); // 1ms
     KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(p, MetaSearcherIndexerGet);
-    KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(p, MetaSearcherIndexerReadModifyWrite);
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(p, MetaSearcherIndexerReadModifyWriteBlock);
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(p, MetaSearcherIndexerReadModifyWriteLocation);
     EXPECT_GE(GET(p, meta_searcher, indexer_get_time_us), 1000.0);
-    EXPECT_GE(GET(p, meta_searcher, indexer_read_modify_write_time_us), 1000.0);
+    EXPECT_GE(GET(p, meta_searcher, indexer_read_modify_write_block_time_us), 1000.0);
+    EXPECT_GE(GET(p, meta_searcher, indexer_read_modify_write_location_time_us), 1000.0);
 }
 
 // Test Manager metrics functionality
@@ -122,6 +149,8 @@ TEST_F(MetricsCollectorTest, ManagerMetricsTest) {
 
     EXPECT_DOUBLE_EQ(GET(p, manager, request_key_count), 0.);
     EXPECT_DOUBLE_EQ(GET(p, manager, prefix_match_len), 0.);
+    EXPECT_EQ(GET(p, manager, get_cache_location_query_block_counter), 0u);
+    EXPECT_EQ(GET(p, manager, get_cache_location_hit_block_counter), 0u);
     EXPECT_DOUBLE_EQ(GET(p, manager, prefix_match_time_us), 0.);
     EXPECT_DOUBLE_EQ(GET(p, manager, lock_write_location_retry_times), 0.);
     EXPECT_DOUBLE_EQ(GET(p, manager, write_cache_io_cost_us), 0.);
@@ -138,6 +167,16 @@ TEST_F(MetricsCollectorTest, ManagerMetricsTest) {
     EXPECT_DOUBLE_EQ(GET(p, manager, prefix_match_len), 10.);
     EXPECT_DOUBLE_EQ(GET(p, manager, lock_write_location_retry_times), 5.);
     EXPECT_DOUBLE_EQ(GET(p, manager, write_cache_io_cost_us), 2000.);
+
+    // Test counter accumulation (counter members are public, direct += works)
+    p->manager_get_cache_location_query_block_counter_metrics_ += 100;
+    p->manager_get_cache_location_hit_block_counter_metrics_ += 60;
+    EXPECT_EQ(GET(p, manager, get_cache_location_query_block_counter), 100u);
+    EXPECT_EQ(GET(p, manager, get_cache_location_hit_block_counter), 60u);
+    p->manager_get_cache_location_query_block_counter_metrics_ += 50;
+    p->manager_get_cache_location_hit_block_counter_metrics_ += 30;
+    EXPECT_EQ(GET(p, manager, get_cache_location_query_block_counter), 150u);
+    EXPECT_EQ(GET(p, manager, get_cache_location_hit_block_counter), 90u);
 
     // Test time measurement
     KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, ManagerPrefixMatch);
@@ -249,4 +288,162 @@ TEST_F(MetricsCollectorTest, MetaIndexerAccumulativeMetricsCollectorTest) {
     SET_METRICS_(p, meta_indexer, total_cache_usage, 456.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, total_key_count), 123.);
     EXPECT_DOUBLE_EQ(GET(p, meta_indexer, total_cache_usage), 456.);
+}
+
+TEST_F(MetricsCollectorTest, CacheManagerInstanceMetricsCollectorTest) {
+    metrics_collector_ = std::make_shared<CacheManagerInstanceMetricsCollector>(metrics_registry_);
+    metrics_collector_->Init();
+
+    auto p = std::dynamic_pointer_cast<CacheManagerInstanceMetricsCollector>(metrics_collector_);
+    ASSERT_NE(nullptr, p);
+
+    // Test GAUGE metrics
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, key_count), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, byte_size), 0.);
+    SET_METRICS_(p, cache_manager_instance, key_count, 100.);
+    SET_METRICS_(p, cache_manager_instance, byte_size, 2048.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, key_count), 100.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, byte_size), 2048.);
+
+    // Test async_queue gauge metrics
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_queue_max_size), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_queue_avg_size), 0.);
+    SET_METRICS_(p, cache_manager_instance, async_queue_max_size, 30.);
+    SET_METRICS_(p, cache_manager_instance, async_queue_avg_size, 13.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_queue_max_size), 30.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_queue_avg_size), 13.);
+
+    // Test async write stats gauge metrics
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_flush_key_count), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_batch_flush_time_us), 0.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_pipeline_error_count), 0.);
+    SET_METRICS_(p, cache_manager_instance, async_flush_key_count, 1000.);
+    SET_METRICS_(p, cache_manager_instance, async_batch_flush_time_us, 500.);
+    SET_METRICS_(p, cache_manager_instance, async_pipeline_error_count, 2.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_flush_key_count), 1000.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_batch_flush_time_us), 500.);
+    EXPECT_DOUBLE_EQ(GET(p, cache_manager_instance, async_pipeline_error_count), 2.);
+}
+
+TEST_F(MetricsCollectorTest, ChronoScopeConcurrentTest) {
+    metrics_collector_ = std::make_shared<ServiceMetricsCollector>(metrics_registry_);
+    metrics_collector_->Init();
+
+    auto p = std::dynamic_pointer_cast<ServiceMetricsCollector>(metrics_collector_);
+    ASSERT_NE(nullptr, p);
+
+    constexpr int kThreadCount = 8;
+    constexpr int kIterations = 50;
+    constexpr int kSleepUs = 1000; // 1ms
+
+    for (int iter = 0; iter < kIterations; ++iter) {
+        std::vector<std::thread> threads;
+        threads.reserve(kThreadCount);
+        for (int t = 0; t < kThreadCount; ++t) {
+            threads.emplace_back([&p]() {
+                auto scope = KVCM_METRICS_COLLECTOR_CHRONO_SCOPE(p, MetaSearcherIndexerGet);
+                usleep(kSleepUs);
+            });
+        }
+        for (auto &th : threads) {
+            th.join();
+        }
+        EXPECT_GE(GET(p, meta_searcher, indexer_get_time_us), static_cast<double>(kSleepUs));
+    }
+}
+
+TEST_F(MetricsCollectorTest, MarkBeginWithoutMarkEndDoesNotRecord) {
+    metrics_collector_ = std::make_shared<ServiceMetricsCollector>(metrics_registry_);
+    metrics_collector_->Init();
+
+    auto p = std::dynamic_pointer_cast<ServiceMetricsCollector>(metrics_collector_);
+    ASSERT_NE(nullptr, p);
+
+    EXPECT_DOUBLE_EQ(GET(p, manager, batch_get_location_time_us), 0.);
+
+    // MARK_BEGIN without MARK_END: guard destructor should NOT write
+    {
+        KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, ManagerBatchGetLocation);
+        usleep(1000);
+    }
+    EXPECT_DOUBLE_EQ(GET(p, manager, batch_get_location_time_us), 0.);
+
+    // MARK_BEGIN + MARK_END: should record normally
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_BEGIN(p, ManagerBatchGetLocation);
+    usleep(1000);
+    KVCM_METRICS_COLLECTOR_CHRONO_MARK_END(p, ManagerBatchGetLocation);
+    EXPECT_GT(GET(p, manager, batch_get_location_time_us), 1000.0);
+}
+
+TEST_F(MetricsCollectorTest, ChronoScopeAutoFinishOnDestruct) {
+    metrics_collector_ = std::make_shared<ServiceMetricsCollector>(metrics_registry_);
+    metrics_collector_->Init();
+
+    auto p = std::dynamic_pointer_cast<ServiceMetricsCollector>(metrics_collector_);
+    ASSERT_NE(nullptr, p);
+
+    EXPECT_DOUBLE_EQ(GET(p, meta_searcher, indexer_get_time_us), 0.);
+
+    // CHRONO_SCOPE without explicit end: guard destructor SHOULD write
+    {
+        auto scope = KVCM_METRICS_COLLECTOR_CHRONO_SCOPE(p, MetaSearcherIndexerGet);
+        usleep(1000);
+    }
+    EXPECT_GT(GET(p, meta_searcher, indexer_get_time_us), 1000.0);
+}
+
+// Verify per-scope isolation with a shared collector, asymmetric sleep,
+// and staggered start.  With the old shared-begin_ member, thread B's
+// MarkBegin() would overwrite thread A's begin_, causing A to compute
+// ~3 ms instead of ~5 ms.  Per-scope begin_us_ on the stack keeps each
+// measurement independent.
+//
+// Uses an atomic flag so that thread A's scope destruction (gauge write)
+// is guaranteed to happen AFTER thread B's, removing the scheduler-
+// dependent race on which thread writes last.
+TEST_F(MetricsCollectorTest, ChronoScopeAsymmetricConcurrentTest) {
+    constexpr int kIterations = 20;
+    constexpr int kLongSleepUs = 5000;  // 5 ms – thread A
+    constexpr int kShortSleepUs = 1000; // 1 ms – thread B
+    constexpr int kStaggerUs = 2000;    // 2 ms delay before starting thread B
+
+    for (int iter = 0; iter < kIterations; ++iter) {
+        metrics_collector_ = std::make_shared<ServiceMetricsCollector>(metrics_registry_);
+        metrics_collector_->Init();
+        auto p = std::dynamic_pointer_cast<ServiceMetricsCollector>(metrics_collector_);
+        ASSERT_NE(nullptr, p);
+
+        std::atomic<bool> short_done{false};
+
+        // Thread A: starts immediately, sleeps 5 ms, then waits for B's scope
+        // to be destroyed before letting its own scope destruct.
+        std::thread t_long([&p, &short_done]() {
+            auto scope = KVCM_METRICS_COLLECTOR_CHRONO_SCOPE(p, MetaSearcherIndexerGet);
+            usleep(kLongSleepUs);
+            while (!short_done.load(std::memory_order_acquire)) {
+                usleep(50);
+            }
+        });
+
+        // Stagger: wait 2 ms so thread B's MarkBegin timestamp differs from A's
+        usleep(kStaggerUs);
+
+        // Thread B: starts 2 ms later, sleeps 1 ms, scope destructs, then signals.
+        std::thread t_short([&p, &short_done]() {
+            {
+                auto scope = KVCM_METRICS_COLLECTOR_CHRONO_SCOPE(p, MetaSearcherIndexerGet);
+                usleep(kShortSleepUs);
+            }
+            short_done.store(true, std::memory_order_release);
+        });
+
+        t_short.join();
+        t_long.join();
+
+        // Thread A's scope destructs last → Gauge reflects A's measurement.
+        // Correct per-scope: Gauge ≈ 5 ms (A's own begin_us_)
+        // Broken shared begin_: Gauge ≈ 3 ms (A would use B's begin_)
+        double val = GET(p, meta_searcher, indexer_get_time_us);
+        EXPECT_GE(val, static_cast<double>(kLongSleepUs - 500));
+    }
 }

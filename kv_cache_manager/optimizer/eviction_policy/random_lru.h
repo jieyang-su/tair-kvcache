@@ -12,8 +12,7 @@ namespace kv_cache_manager {
 
 class RandomLruEvictionPolicy : public EvictionPolicy {
 private:
-    std::string name_;
-    std::vector<BlockEntry *> blocks_; // 当前所有块
+    std::vector<BlockEntry *> blocks_;
     std::vector<int64_t> timestamps_;
     std::unordered_map<BlockEntry *, size_t> block_to_index_; // 映射：块 -> index
     uint64_t xor_state_ = 0x12345678ABCDEF01ULL;              // 随机数状态
@@ -23,13 +22,9 @@ private:
 public:
     explicit RandomLruEvictionPolicy(const std::string &name, const RandomLruParams &params, const int32_t batch_size);
     ~RandomLruEvictionPolicy() override;
-    std::string name() const override { return name_; }
-    void set_name(const std::string &name) override { name_ = name; }
     void OnBlockWritten(BlockEntry *block) override;
 
     void OnNodeWritten(std::vector<BlockEntry *> &blocks) override;
-
-    void OnBlockAccessed(BlockEntry *block, int64_t timestamp) override;
 
     // 驱逐 count 个块（分批，每批按 RandomLRU）
     std::vector<BlockEntry *> EvictBlocks(size_t count) override;
@@ -37,6 +32,8 @@ public:
     size_t size() const override { return blocks_.size(); }
 
 private:
+    // NVI hook：外部统一通过基类 OnBlockAccessedWithOptions 入口调用。
+    void OnBlockAccessed(BlockEntry *block, int64_t timestamp) override;
     // 随机采样 sample_size 个块
     // 从候选块中选出 k 个 LRU 的块（按 last_access_time 排序）
 

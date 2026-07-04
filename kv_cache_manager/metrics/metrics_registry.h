@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -50,6 +51,12 @@ namespace kv_cache_manager {
 #define REGISTER_METRICS_W_TAGS_GAUGE_(metrics_registry, group, name, tags)                                            \
     do {                                                                                                               \
         METRICS_(group, name) = (metrics_registry)->GetGauge(METRICS_NAME_(group, name), tags);                        \
+    } while (0)
+
+#define REPORT_DYNAMIC_GAUGE_(metrics_registry, name, tags, value)                                                     \
+    do {                                                                                                               \
+        auto gauge = (metrics_registry)->GetGauge((name), (tags));                                                     \
+        gauge = (value);                                                                                               \
     } while (0)
 
 #define DEFINE_COPY_METRICS_COUNTER_(group, name)                                                                      \
@@ -97,7 +104,26 @@ namespace kv_cache_manager {
 
 using CounterValue = std::atomic<std::uint64_t>;
 using GaugeValue = std::atomic<double>;
-using MetricsValue = std::variant<CounterValue, GaugeValue>;
+using MetricsValueVariant = std::variant<CounterValue, GaugeValue>;
+
+// MetricsValue holds both the underlying value and a "touched" flag
+// used by PrometheusExporter to drop never-written series — e.g. the
+// (manager.batch_add_location_time_us, api_name=GetCacheMeta) tuple
+// is registered for every Service collector but never written, and
+// would otherwise inflate Prometheus cardinality.
+//
+// The flag is set by every write path on Counter/Gauge (operator=,
+// operator+=, operator++, etc.) and stays set; Reset() does not
+// clear it because resetting a previously-active counter to zero is
+// still a deliberately observable state.
+struct MetricsValue {
+    MetricsValueVariant value;
+    std::atomic<bool> touched{false};
+
+    template <typename T, typename U>
+    MetricsValue(std::in_place_type_t<T> tag, U init) noexcept : value(tag, init) {}
+};
+
 using MetricsTags = std::map<std::string, std::string>;
 
 class MetricsValueWrapper {
@@ -114,6 +140,8 @@ protected:
 
     MetricsValueWrapper &operator=(const MetricsValueWrapper &) = default;
     MetricsValueWrapper &operator=(MetricsValueWrapper &&) = default;
+
+    void MarkTouched() noexcept;
 
     std::shared_ptr<MetricsValue> value_;
 };
@@ -180,6 +208,15 @@ public:
 
     Counter GetOrCreateCounter(const MetricsTags &tags);
     Gauge GetOrCreateGauge(const MetricsTags &tags);
+    std::optional<Gauge> GetGauge(const MetricsTags &tags);
+    bool RemoveByTags(const MetricsTags &tags);
+
+    // remove a specific entry by exact tags; returns true if erased
+    bool Remove(const MetricsTags &tags);
+
+    // remove all entries whose tags are a superset of filter;
+    // returns number of entries removed
+    std::size_t RemoveByTagFilter(const MetricsTags &filter);
 
 private:
     std::mutex mutex_;
@@ -205,6 +242,13 @@ public:
 
     Counter GetCounter(const std::string &name, const MetricsTags &tags = {});
     Gauge GetGauge(const std::string &name, const MetricsTags &tags = {});
+
+    // remove a specific metric by name + tags; returns true if erased
+    bool Remove(const std::string &name, const MetricsTags &tags);
+
+    // remove all metrics across all names whose tags match the filter;
+    // returns total number of entries removed
+    std::size_t RemoveByTagFilter(const MetricsTags &filter);
 
     [[nodiscard]] std::shared_ptr<MetricsData> GetMetricsData(const std::string &name) noexcept;
     [[nodiscard]] std::shared_ptr<MetricsData> GetOrCreateMetricsData(const std::string &name) noexcept;

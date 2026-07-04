@@ -29,33 +29,60 @@ public:
     ErrorCode Open() noexcept override;
     ErrorCode Close() noexcept override;
 
-    // write
-    std::vector<ErrorCode> Put(const KeyTypeVec &keys, const FieldMapVec &field_maps) noexcept override;
-    std::vector<ErrorCode> UpdateFields(const KeyTypeVec &keys, const FieldMapVec &field_maps) noexcept override;
-    std::vector<ErrorCode> Upsert(const KeyTypeVec &keys, const FieldMapVec &field_maps) noexcept override;
-    std::vector<ErrorCode> Delete(const KeyTypeVec &keys) noexcept override;
+    // ----- Write APIs -----
+    std::vector<ErrorCode> Put(RequestContext *request_context,
+                               const KeyTypeVec &keys,
+                               const CacheLocationMapVector &locations,
+                               const PropertyMapVector &properties) noexcept override;
+    std::vector<ErrorCode> Upsert(RequestContext *request_context,
+                                  const KeyTypeVec &keys,
+                                  const CacheLocationMapVector &locations,
+                                  const PropertyMapVector &properties) noexcept override;
+    std::vector<ErrorCode> Delete(RequestContext *request_context, const KeyTypeVec &keys) noexcept override;
+    std::vector<ErrorCode> DeleteLocations(RequestContext *request_context,
+                                           const KeyTypeVec &keys,
+                                           const LocationIdsPerKey &location_ids) noexcept override;
 
-    // read
-    std::vector<ErrorCode> Get(const KeyTypeVec &keys,
-                               const std::vector<std::string> &field_names,
-                               FieldMapVec &out_field_maps) noexcept override;
-    std::vector<ErrorCode> GetAllFields(const KeyTypeVec &keys, FieldMapVec &out_field_maps) noexcept override;
-    std::vector<ErrorCode> Exists(const KeyTypeVec &keys, std::vector<bool> &out_is_exist_vec) noexcept override;
-    ErrorCode ListKeys(const std::string &cursor,
+    // ----- Read APIs -----
+    std::vector<ErrorCode> Get(RequestContext *request_context,
+                               const KeyTypeVec &keys,
+                               CacheLocationMapVector &out_locations,
+                               PropertyMapVector &out_properties) noexcept override;
+    std::vector<ErrorCode> GetLocations(RequestContext *request_context,
+                                        const KeyTypeVec &keys,
+                                        CacheLocationMapVector &out_locations) noexcept override;
+    std::vector<std::vector<ErrorCode>> GetLocations(RequestContext *request_context,
+                                                     const KeyTypeVec &keys,
+                                                     const LocationIdsPerKey &location_ids,
+                                                     LocationsPerKey &out_locations) noexcept override;
+    std::vector<ErrorCode> GetLocationIds(RequestContext *request_context,
+                                          const KeyTypeVec &keys,
+                                          LocationIdsPerKey &out_location_ids) noexcept override;
+    std::vector<ErrorCode> GetProperties(RequestContext *request_context,
+                                         const KeyTypeVec &keys,
+                                         const std::vector<std::string> &field_names,
+                                         PropertyMapVector &out_properties) noexcept override;
+    std::vector<ErrorCode> Exists(RequestContext *request_context,
+                                  const KeyTypeVec &keys,
+                                  std::vector<bool> &out_is_exist_vec) noexcept override;
+    std::vector<ErrorCode> ExistsLocation(RequestContext *request_context,
+                                          const KeyTypeVec &keys,
+                                          std::vector<bool> &out_exists) noexcept override;
+    ErrorCode ListKeys(RequestContext *request_context,
+                       const std::string &cursor,
                        const int64_t limit,
                        std::string &out_next_cursor,
-                       std::vector<KeyType> &out_keys) noexcept override;
-    ErrorCode RandomSample(const int64_t count, std::vector<KeyType> &out_keys) noexcept override;
-    ErrorCode SampleReclaimKeys(const int64_t count, std::vector<KeyType> &out_keys) noexcept override;
+                       KeyTypeVec &out_keys) noexcept override;
+    ErrorCode
+    RandomSample(RequestContext *request_context, const int64_t count, KeyTypeVec &out_keys) noexcept override;
+    ErrorCode
+    SampleReclaimKeys(RequestContext *request_context, const int64_t count, KeyTypeVec &out_keys) noexcept override;
 
-    // meta data
+    // ----- Metadata APIs -----
     ErrorCode PutMetaData(const FieldMap &field_maps) noexcept override;
     ErrorCode GetMetaData(FieldMap &field_maps) noexcept override;
 
 private:
-    std::vector<std::string> AppendPrefixToKeys(const KeyTypeVec &keys) const;
-    bool StripPrefixInKeys(const std::vector<std::string> &keys_with_prefix, std::vector<KeyType> &out_keys) const;
-
     // virtual for test
     virtual std::shared_ptr<RedisClient> CreateRedisClient() const;
 

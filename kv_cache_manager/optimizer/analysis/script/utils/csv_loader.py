@@ -10,6 +10,7 @@ CSV 数据加载层
 """
 
 import os
+import re
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -36,33 +37,82 @@ def collect_instance_csvs(output_dir: str) -> Dict[str, str]:
     }
 
 
-def parse_instance_metrics(csv_file: str) -> Optional[dict]:
+def parse_instance_metrics(csv_file: str, bytes_per_block: int) -> Optional[dict]:
     """
     从单个 instance CSV 解析累计指标（取最后一行）。
 
+    Args:
+        csv_file:        hit_rates CSV 路径
+        bytes_per_block: 每个 block 的字节数（= block_size × bytes_per_token），必须 > 0
+
     Returns:
-        {"acc_total_hit_rate", "acc_internal_hit_rate",
-         "acc_external_hit_rate", "cached_blocks_all"}
+        {"acc_total_hit_rate", "acc_local_hit_rate",
+         "acc_remote_hit_rate", "cached_blocks_all", "cached_gb",
+         "tier_names": [...], "acc_tier_hit_rates": {...}, "tier_block_nums": {...}}
         或 None（文件为空时）
     """
     df = pd.read_csv(csv_file)
     if df.empty:
         return None
+    required = [
+        "CachedBlocks",
+        "CachedBlocksAllInstances",
+        "AccHitRate",
+        "AccLocalHitRate",
+        "AccRemoteHitRate",
+    ]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"{csv_file} missing columns: {missing}")
     last = df.iloc[-1]
-    return {
+    cached_blocks_all = int(last["CachedBlocksAllInstances"])
+    result = {
         "acc_total_hit_rate": float(last["AccHitRate"]),
-        "acc_internal_hit_rate": float(last["AccInternalHitRate"]),
-        "acc_external_hit_rate": float(last["AccExternalHitRate"]),
-        "cached_blocks_all": int(last["CachedBlocksAllInstance"]),
+        "acc_local_hit_rate": float(last["AccLocalHitRate"]),
+        "acc_remote_hit_rate": float(last["AccRemoteHitRate"]),
+        "cached_blocks_all": cached_blocks_all,
+        "cached_gb": cached_blocks_all * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else 0,
     }
+    
+    # 解析 per-tier 数据
+    tier_names = []
+    acc_tier_hit_rates = {}
+    tier_block_nums = {}
+    
+    # 从列名中提取 tier 信息
+    for col in df.columns:
+        if col.startswith("AccTier") and col.endswith("_HitRate"):
+            # 提取 tier 名称: AccTier0(GPU)_HitRate -> GPU
+            match = re.search(r'AccTier\d+\(([^)]+)\)_HitRate', col)
+            if match:
+                tier_name = match.group(1)
+                tier_names.append(tier_name)
+                acc_tier_hit_rates[tier_name] = float(last[col])
+        elif col.startswith("Tier") and col.endswith("_BlockNum"):
+            # 提取 tier 名称: Tier0(GPU)_BlockNum -> GPU
+            match = re.search(r'Tier\d+\(([^)]+)\)_BlockNum', col)
+            if match:
+                tier_name = match.group(1)
+                tier_block_nums[tier_name] = int(last[col])
+    
+    if tier_names:
+        result["tier_names"] = tier_names
+        result["acc_tier_hit_rates"] = acc_tier_hit_rates
+        result["tier_block_nums"] = tier_block_nums
+    
+    return result
 
 
-def _read_hit_rates_from_csv(csv_path: str) -> Optional[dict]:
+def _read_hit_rates_from_csv(csv_path: str, bytes_per_block: int) -> Optional[dict]:
     """
-    读取单个 hit_rates CSV，兼容 Acc* 和非 Acc* 列名。
+    读取单个标准 hit_rates CSV。
+
+    Args:
+        csv_path:        hit_rates CSV 路径
+        bytes_per_block: 每个 block 的字节数（= block_size × bytes_per_token），必须 > 0
 
     Returns:
-        {"total", "internal", "external", "cached_blocks_all"}
+        {"total", "local", "remote", "cached_blocks_all", "cached_gb"}
         或 None
     """
     try:
@@ -71,19 +121,24 @@ def _read_hit_rates_from_csv(csv_path: str) -> Optional[dict]:
             return None
         last = df.iloc[-1]
 
-        def _get(col_acc, col_fallback):
-            if col_acc in df.columns:
-                return float(last[col_acc])
-            if col_fallback in df.columns:
-                return float(last[col_fallback])
-            return 0.0
+        required = [
+            "CachedBlocks",
+            "CachedBlocksAllInstances",
+            "AccHitRate",
+            "AccLocalHitRate",
+            "AccRemoteHitRate",
+        ]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(f"missing columns: {missing}")
 
-        cached = int(last["CachedBlocksAllInstance"]) if "CachedBlocksAllInstance" in df.columns else 0
+        cached_all = int(last["CachedBlocksAllInstances"])
         return {
-            "total": _get("AccHitRate", "HitRate"),
-            "internal": _get("AccInternalHitRate", "InternalHitRate"),
-            "external": _get("AccExternalHitRate", "ExternalHitRate"),
-            "cached_blocks_all": cached,
+            "total": float(last["AccHitRate"]),
+            "local": float(last["AccLocalHitRate"]),
+            "remote": float(last["AccRemoteHitRate"]),
+            "cached_blocks_all": cached_all,
+            "cached_gb": cached_all * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else 0,
         }
     except Exception as e:
         print(f"  Warning: Failed to read {csv_path}: {e}")
@@ -97,22 +152,25 @@ def _read_hit_rates_from_csv(csv_path: str) -> Optional[dict]:
 def generate_capacity_list(
     max_blocks: int,
     num_points: int,
-    min_capacity: int = 2000,
+    min_capacity_ratio: float = 1e-4,
 ) -> List[int]:
     """
     指数分布采样容量列表，从小到大排序。
 
     Args:
-        max_blocks:   warmup 获取的最大 block 数
-        num_points:   采样点数
-        min_capacity: 最小容量阈值（小于此值的点丢弃）
+        max_blocks:          warmup 获取的最大 block 数
+        num_points:          采样点数
+        min_capacity_ratio:  最小容量相对阈值（小于 max_blocks * ratio 的点丢弃）
     """
+    if max_blocks <= 0 or num_points <= 0:
+        return []
+    min_capacity = max(1, int(max_blocks * min_capacity_ratio))
     x = np.linspace(-4, 4, num_points)
     ratios = np.exp(x) / np.exp(4)
     return sorted({
         int(max_blocks * r)
         for r in ratios
-        if int(max_blocks * r) > min_capacity
+        if int(max_blocks * r) >= min_capacity
     })
 
 
@@ -138,10 +196,17 @@ def _parse_cap_dirname(dirname: str):
     return capacity, policy
 
 
-def load_results_from_csv_dir(csv_save_dir: str) -> Dict[str, List[dict]]:
+def load_results_from_csv_dir(
+    csv_save_dir: str,
+    bytes_per_block_map: Dict[str, int],
+) -> Dict[str, List[dict]]:
     """
     扫描 csv_save_dir/cap_<capacity>_<policy>/ 子目录，
     构建按策略分组的结果。
+
+    Args:
+        csv_save_dir:      保存 CSV 子目录的根目录
+        bytes_per_block_map: {instance_id: bytes_per_block}，必须覆盖所有 instance
 
     Returns:
         {"policy_name": [{"capacity": int, "instances": {...}}, ...]}
@@ -179,7 +244,8 @@ def load_results_from_csv_dir(csv_save_dir: str) -> Dict[str, List[dict]]:
             if not fname.endswith(".csv"):
                 continue
             instance_id = fname.replace("_hit_rates.csv", "")
-            metrics = _read_hit_rates_from_csv(os.path.join(cap_dir, fname))
+            bpb = bytes_per_block_map.get(instance_id, 0)
+            metrics = _read_hit_rates_from_csv(os.path.join(cap_dir, fname), bpb)
             if metrics:
                 instances[instance_id] = metrics
 

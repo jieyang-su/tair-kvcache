@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "kv_cache_manager/data_storage/common_define.h"
-#include "kv_cache_manager/manager/cache_location.h"
+#include "kv_cache_manager/meta/cache_location.h"
 
 namespace kv_cache_manager {
 
@@ -58,6 +58,8 @@ private:
     CacheLocationViewVec cache_locations_view_;
     CacheLocationVector raw_cache_locations_;
 };
+
+using BatchLocationsView = std::vector<CacheLocationViewVecWrapper>;
 
 class CacheMetaVecWrapper {
 public:

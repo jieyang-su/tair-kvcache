@@ -205,12 +205,12 @@ def main():
 
     parser.add_argument('-i', '--input', required=True, nargs='+',
                         help='Input trace file path(s) (supports multiple files)')
-    parser.add_argument('-o', '--output', default=None, 
-                        help='Output file path (default: auto-generate based on input filename and mode)')
+    parser.add_argument('-o', '--output', default=None,
+                        help='Output file path (default: auto-generate based on input filename)')
     parser.add_argument('-f', '--format', required=True, choices=available_formats,
                         help=f'Input trace format (available: {", ".join(sorted(available_formats))})')
-    parser.add_argument('--mode', default='optimizer', choices=['optimizer', 'inference'],
-                        help='Output mode: optimizer (Get+Write) or inference (DialogTurn)')
+    parser.add_argument('--mode', default='optimizer', choices=['optimizer'],
+                        help='Output mode: optimizer (Get+Write)')
     parser.add_argument('--instance-id', default='instance', help='Default instance ID')
     parser.add_argument('--instance-block-sizes', default=None,
                         help='Per-instance block sizes (format: instance1:16,instance2:32)')
@@ -222,8 +222,6 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4, help='Number of parallel workers for tokenization')
     parser.add_argument('--no-sort', action='store_true', 
                         help='Disable timestamp sorting (faster but unsorted output)')
-    parser.add_argument('--keep-tokens', action='store_true',
-                        help='Keep tokens field in output (for debugging, increases file size significantly)')
     parser.add_argument('--ignore-response', action='store_true',
                         help='Ignore response when computing block IDs; write trace covers prompt only (useful when response is unavailable or irrelevant)')
     parser.add_argument('--no-truncate', action='store_true',
@@ -249,7 +247,7 @@ def main():
             input_dir = input_files[0].parent
             input_stem = "merged"
         
-        suffix = '_optimizer' if args.mode == 'optimizer' else '_inference'
+        suffix = '_optimizer'
         output_filename = f"{input_stem}{suffix}.jsonl"
         output_path = input_dir / output_filename
         print(f"📝 Auto-generated output file: {output_path}")
@@ -295,7 +293,6 @@ def main():
             time_field=args.time_field,
             content_field=args.content_field,
             num_workers=args.num_workers,
-            keep_tokens=args.keep_tokens,
             ignore_response=args.ignore_response,
             truncate=not args.no_truncate
         )
@@ -305,8 +302,6 @@ def main():
         # ============================================
         print(f"🔄 Converting {len(input_files)} file(s) → {output_path}")
         print(f"   Format: {args.format}, Mode: {args.mode}")
-        if args.keep_tokens:
-            print(f"   ⚠️  Warning: --keep-tokens enabled, output file will be large!")
         if args.ignore_response:
             print(f"   ℹ️  --ignore-response: block IDs computed from prompt only")
         if args.no_truncate:
@@ -350,7 +345,7 @@ def main():
                 print(f"   Direct output to: {individual_output.name}")
             else:
                 input_path = Path(input_file)
-                suffix = '_optimizer' if args.mode == 'optimizer' else '_inference'
+                suffix = '_optimizer'
                 individual_output = input_path.parent / f"{input_path.stem}{suffix}.jsonl"
             
             # 断点续传：检查是否已存在
@@ -395,7 +390,7 @@ def main():
         if args.no_sort:
             print("   Mode: No sorting")
         else:
-            print("   Mode: Sort by timestamp_us")
+            print("   Mode: Sort by timestamp_ns")
         
         merged_count = merge_jsonl_files(
             input_files=converted_files,
