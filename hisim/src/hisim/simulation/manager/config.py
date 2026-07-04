@@ -155,17 +155,21 @@ class ConfigManager:
             dp_size = internal_config.dp_size
         enable_wideep = bool(scheduler_config.get("enable_wideep", False))
         moe_backend = scheduler_config.get("moe_backend")
-        dtype = scheduler_config.get("data_type")
-        if dtype is not None:
-            dtype = DataType(dtype.upper())
-        else:
+        def parse_dtype(name: str, default=None):
+            dtype = scheduler_config.get(name)
+            if dtype is not None:
+                return DataType(dtype.upper())
+            return default
+
+        dtype = parse_dtype("data_type")
+        if dtype is None:
             dtype = DataType.from_torch_dtype(model.torch_dtype)
 
-        kv_cache_dtype = scheduler_config.get("kv_cache_data_type")
-        if kv_cache_dtype is not None:
-            kv_cache_dtype = DataType(kv_cache_dtype)
-        else:
-            kv_cache_dtype = dtype
+        gemm_dtype = parse_dtype("gemm_data_type", dtype)
+        moe_dtype = parse_dtype("moe_data_type", dtype)
+        kv_cache_dtype = parse_dtype("kv_cache_data_type", dtype)
+        fmha_dtype = parse_dtype("fmha_data_type", kv_cache_dtype)
+        comm_dtype = parse_dtype("comm_data_type", dtype)
 
         sched_config = SchedulerConfig(
             model=model,
@@ -175,11 +179,16 @@ class ConfigManager:
             tp_size=tp_size,
             ep_size=ep_size,
             dp_size=dp_size,
+            num_hidden_layers=scheduler_config.get("num_hidden_layers", 0),
             enable_wideep=enable_wideep,
             moe_backend=moe_backend,
             # TODO: initialize with the runtime data type.
             data_type=dtype,
+            gemm_data_type=gemm_dtype,
+            moe_data_type=moe_dtype,
             kv_cache_data_type=kv_cache_dtype,
+            fmha_data_type=fmha_dtype,
+            comm_data_type=comm_dtype,
             page_size=internal_config.page_size,
             backend_name=backend,
             backend_version=scheduler_config.get("backend_version"),
@@ -194,6 +203,7 @@ class ConfigManager:
                 tp_size=server_args.get("tp_size", 1),
                 ep_size=server_args.get("ep_size", 1),
                 dp_size=server_args.get("dp_size", 1),
+                num_hidden_layers=server_args.get("num_hidden_layers", 0),
                 enable_wideep=False,
                 moe_backend=None,
                 max_prefill_tokens=server_args.get("max_prefill_tokens"),

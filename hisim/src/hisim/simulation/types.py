@@ -23,7 +23,11 @@ class SchedulerConfig:
     data_type: Optional[DataType] = (
         None  # Data type for model weights and activations. If none is set, it will be automatically detected.
     )
+    gemm_data_type: Optional[DataType] = None
+    moe_data_type: Optional[DataType] = None
     kv_cache_data_type: Optional[DataType] = None
+    fmha_data_type: Optional[DataType] = None
+    comm_data_type: Optional[DataType] = None
     mem_fraction_static: Optional[float] = None
     hicache_storage_backend: Optional[str] = None
     hicache_storage_prefetch_policy: str = (
@@ -34,6 +38,7 @@ class SchedulerConfig:
     ep_size: int = 1
     dp_size: int = 1
     pp_size: int = 1
+    num_hidden_layers: int = 0
     enable_wideep: bool = False
     moe_backend: Optional[str] = None
     max_running_requests: int = (1 << 31) - 1

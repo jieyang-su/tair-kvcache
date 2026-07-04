@@ -34,8 +34,13 @@ class SchedulerConfig:
     tp_size: int = 1
     ep_size: int = 1
     dp_size: int = 1
+    num_hidden_layers: int = 0
     data_type: str = "FP16"
+    gemm_data_type: Optional[str] = None
+    moe_data_type: Optional[str] = None
     kv_cache_data_type: str = "FP16"
+    fmha_data_type: Optional[str] = None
+    comm_data_type: Optional[str] = None
     backend_name: str = "sglang"
     backend_version: Optional[str] = None
 
@@ -123,11 +128,44 @@ class SimulationArgs:
             f"--{prefix}ep-size", dest="sim_ep_size", type=int, default=None
         )
         parser.add_argument(
+            f"--{prefix}dp-size", dest="sim_dp_size", type=int, default=None
+        )
+        parser.add_argument(
+            f"--{prefix}num-hidden-layers",
+            dest="sim_num_hidden_layers",
+            type=int,
+            default=None,
+        )
+        parser.add_argument(
             f"--{prefix}data-type", dest="sim_data_type", type=str, default=None
+        )
+        parser.add_argument(
+            f"--{prefix}gemm-data-type",
+            dest="sim_gemm_data_type",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}moe-data-type",
+            dest="sim_moe_data_type",
+            type=str,
+            default=None,
         )
         parser.add_argument(
             f"--{prefix}kv-cache-data-type",
             dest="sim_kv_cache_data_type",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}fmha-data-type",
+            dest="sim_fmha_data_type",
+            type=str,
+            default=None,
+        )
+        parser.add_argument(
+            f"--{prefix}comm-data-type",
+            dest="sim_comm_data_type",
             type=str,
             default=None,
         )
@@ -172,8 +210,14 @@ class SimulationArgs:
             scheduler=SchedulerConfig(
                 tp_size=scheduler.get("tp_size", 1),
                 ep_size=scheduler.get("ep_size", 1),
+                dp_size=scheduler.get("dp_size", 1),
+                num_hidden_layers=scheduler.get("num_hidden_layers", 0),
                 data_type=scheduler.get("data_type", "FP16"),
+                gemm_data_type=scheduler.get("gemm_data_type"),
+                moe_data_type=scheduler.get("moe_data_type"),
                 kv_cache_data_type=scheduler.get("kv_cache_data_type", "FP16"),
+                fmha_data_type=scheduler.get("fmha_data_type"),
+                comm_data_type=scheduler.get("comm_data_type"),
                 backend_name=scheduler.get("backend_name", "sglang"),
                 backend_version=scheduler.get("backend_version"),
             ),
@@ -222,8 +266,14 @@ class SimulationArgs:
         for arg, field in [
             ("sim_tp_size", "tp_size"),
             ("sim_ep_size", "ep_size"),
+            ("sim_dp_size", "dp_size"),
+            ("sim_num_hidden_layers", "num_hidden_layers"),
             ("sim_data_type", "data_type"),
+            ("sim_gemm_data_type", "gemm_data_type"),
+            ("sim_moe_data_type", "moe_data_type"),
             ("sim_kv_cache_data_type", "kv_cache_data_type"),
+            ("sim_fmha_data_type", "fmha_data_type"),
+            ("sim_comm_data_type", "comm_data_type"),
             ("sim_backend_name", "backend_name"),
             ("sim_backend_version", "backend_version"),
         ]:
