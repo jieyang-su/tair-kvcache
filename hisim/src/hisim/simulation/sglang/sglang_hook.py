@@ -580,6 +580,7 @@ class C_SchedulerHook(BaseHook):
 
     SIM_MODE = MockSimulationMode(Envs.simulation_mode())
     OFFLINE_RECV_ALL_REQUEST: bool = False
+    OFFLINE_STREAMING_RECV: bool = os.getenv("HISIM_OFFLINE_STREAMING_RECV") == "1"
     FUTURE_QUEUE: list[
         tuple[float, int, RequestStats]
     ] = []  # tuple(created time, salt, request)
@@ -643,7 +644,10 @@ class C_SchedulerHook(BaseHook):
                 recv_reqs.extend(original_recv_requests(self, *args, **kwargs))
             elif C_SchedulerHook.SIM_MODE == MockSimulationMode.OFFLINE:
                 # Initializing
-                if not C_SchedulerHook.OFFLINE_RECV_ALL_REQUEST:
+                if (
+                    C_SchedulerHook.OFFLINE_STREAMING_RECV
+                    or not C_SchedulerHook.OFFLINE_RECV_ALL_REQUEST
+                ):
                     gen_requests = []
                     extra_requests = []
                     time.sleep(0.05)  # waiting requests
@@ -676,6 +680,11 @@ class C_SchedulerHook(BaseHook):
                                 "Add request to waiting queue with custom queue start timestamp."
                             )
 
+                        if C_SchedulerHook.OFFLINE_STREAMING_RECV:
+                            sim_params["created_time"] = StateManager.get_global_clock()
+                            recv_reqs.append(req)
+                            continue
+
                         C_SchedulerHook.FUTURE_QUEUE.append(
                             (
                                 sim_params.get("queue_start")
@@ -685,7 +694,10 @@ class C_SchedulerHook(BaseHook):
                             )
                         )
 
-                    if len(C_SchedulerHook.FUTURE_QUEUE) != 0:
+                    if (
+                        not C_SchedulerHook.OFFLINE_STREAMING_RECV
+                        and len(C_SchedulerHook.FUTURE_QUEUE) != 0
+                    ):
                         _, _, gen_req = C_SchedulerHook.FUTURE_QUEUE[-1]
                         total_request = gen_req.sampling_params.custom_params[
                             "simulation"
@@ -704,7 +716,7 @@ class C_SchedulerHook(BaseHook):
 
                     if len(extra_requests) != 0:
                         # Schedule the extra requests immediately.
-                        return extra_requests
+                        recv_reqs.extend(extra_requests)
                 else:
                     # Extra requests include: flush request, abort request, etc.
                     recv_reqs.extend(original_recv_requests(self, *args, **kwargs))
@@ -727,11 +739,14 @@ class C_SchedulerHook(BaseHook):
                     "BatchTokenizedGenerateReqInput",
                     "TokenizedGenerateReqInput",
                 ]:
+                    custom_params = req.sampling_params.custom_params
+                    if custom_params is None or "simulation" not in custom_params:
+                        continue
                     req_stats = C_SchedulerHook.REQUEST_STATS[req.rid]
                     req_stats.rid = req.rid
                     req_stats.input_length = len(req.input_ids)
                     req_stats.output_length = req.sampling_params.max_new_tokens
-                    simulation_args = req.sampling_params.custom_params["simulation"]
+                    simulation_args = custom_params["simulation"]
                     if C_SchedulerHook.SIM_MODE == MockSimulationMode.BLOCKING:
                         if "server_created_time" not in simulation_args:
                             logger.warning(

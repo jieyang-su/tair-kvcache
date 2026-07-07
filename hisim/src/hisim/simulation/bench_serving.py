@@ -80,7 +80,7 @@ def _create_bench_client_session():
 
 @dataclass
 class RequestFuncInput:
-    prompt: str
+    prompt: Union[str, List[int]]
     api_url: str
     prompt_len: int
     output_len: int
@@ -993,7 +993,7 @@ def is_file_valid_json(path):
 
 @dataclass
 class DatasetRow:
-    prompt: str
+    prompt: Union[str, List[int]]
     prompt_len: int
     output_len: int
     text_prompt_len: Optional[int] = None
@@ -1740,9 +1740,10 @@ def sample_hisim_collection_requests(
     )
     for idx in range(num_requests):
         item = raw_input_requests[idx]
+        input_ids = item.get("input_ids")
         input_requests.append(
             DatasetRow(
-                prompt=tokenizer.decode(item["input_ids"]),
+                prompt=input_ids if input_ids is not None else item["prompt"],
                 prompt_len=item["input_length"],
                 output_len=item["output_length"],
                 timestamp=item[timestamp_field_name],
